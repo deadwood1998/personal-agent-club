@@ -1,0 +1,44 @@
+{
+  "manifest_version": 1,
+  "id": "personal-agent-club",
+  "name": "Personal Agent Club",
+  "version": "0.1.0",
+  "description": "Personal agents (paired accounts at agent services) as a source on the Agents page: their sessions, messages, sending and search. Skeleton: no real provider yet.",
+  "publisher": "nwverse",
+  "engines": {
+    "extension_protocol": 1
+  },
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/personal-agent-club-linux-amd64",
+      "linux-arm64": "bin/personal-agent-club-linux-arm64",
+      "darwin-arm64": "bin/personal-agent-club-darwin-arm64",
+      "darwin-amd64": "bin/personal-agent-club-darwin-amd64"
+    }
+  },
+  "activation_events": [
+    "on_startup"
+  ],
+  "contributes": {
+    "agent_sources": [
+      {
+        "id": "pac",
+        "name": "Personal Agent Club"
+      }
+    ]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "demo_echo": {
+        "type": "boolean",
+        "title": "Demo echo provider",
+        "description": "Adds the in-memory echo provider, which answers every message with its own text. For trying the source out; nothing leaves the program.",
+        "default": false
+      }
+    }
+  },
+  "permissions": {
+    "network": []
+  }
+}
