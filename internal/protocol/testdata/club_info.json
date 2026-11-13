@@ -1,0 +1,12 @@
+{
+  "version": "0.1.0",
+  "protocolVersion": 1,
+  "providers": [
+    {
+      "provider": "muse",
+      "connection": "browser",
+      "available": false
+    }
+  ],
+  "browser": false
+}

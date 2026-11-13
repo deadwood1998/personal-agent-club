@@ -1,0 +1,11 @@
+{
+  "state": "ok",
+  "remaining": 0.62,
+  "kind": "tokens",
+  "label": "62% left",
+  "resetsAt": 1794500000000,
+  "checkedAt": 1794496400000,
+  "source": "provider",
+  "stale": false,
+  "show": true
+}

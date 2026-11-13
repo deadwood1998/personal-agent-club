@@ -1,0 +1,31 @@
+{
+  "enabled": true,
+  "providers": [
+    {
+      "provider": "cue",
+      "connection": "server",
+      "available": false
+    },
+    {
+      "provider": "echo",
+      "connection": "server",
+      "available": true
+    }
+  ],
+  "accounts": [
+    {
+      "accountId": "a0123456789ab",
+      "provider": "echo",
+      "displayName": "Echo",
+      "status": "active",
+      "externalAccountId": "echo:00112233",
+      "lastSyncedAt": 1800000000000,
+      "sessionCount": 2
+    },
+    {
+      "accountId": "a0123456789ac",
+      "provider": "echo",
+      "sessionCount": 0
+    }
+  ]
+}

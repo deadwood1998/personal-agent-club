@@ -1,0 +1,56 @@
+{
+  "session": {
+    "sessionKey": "agent:echo:a0123456789ab:main",
+    "accountId": "a0123456789ab",
+    "provider": "echo",
+    "title": "Echo",
+    "kind": "main",
+    "canSend": true,
+    "unreadCount": 0,
+    "rankTimeMs": 0
+  },
+  "messages": [
+    {
+      "externalId": "m1",
+      "sessionKey": "agent:echo:a0123456789ab:main",
+      "role": "assistant",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "echo: hi"
+        },
+        {
+          "type": "tool-call",
+          "name": "search",
+          "status": "done",
+          "summary": "looked it up",
+          "input": {
+            "q": "x"
+          }
+        }
+      ],
+      "createTimeMs": 1800000000000,
+      "position": 1
+    },
+    {
+      "externalId": "local:00000000-0000-4000-8000-000000000001",
+      "sessionKey": "agent:echo:a0123456789ab:main",
+      "role": "user",
+      "blocks": [
+        {
+          "type": "text",
+          "text": "hi"
+        }
+      ],
+      "createTimeMs": 1800000000002,
+      "position": 0,
+      "local": {
+        "clientId": "00000000-0000-4000-8000-000000000001",
+        "status": "unconfirmed",
+        "error": "SEND_UNCONFIRMED"
+      }
+    }
+  ],
+  "hasMore": true,
+  "nextCursor": "WzE4MDAwMDAwMDAwMDAsMSwibTEiXQ"
+}

@@ -1,0 +1,30 @@
+{
+  "sessions": [
+    {
+      "sessionKey": "agent:echo:a0123456789ab:main",
+      "accountId": "a0123456789ab",
+      "provider": "echo",
+      "title": "Echo",
+      "kind": "main",
+      "canSend": true,
+      "unreadCount": 1,
+      "rankTimeMs": 1800000000000,
+      "avatarUrl": "https://example.com/a.png",
+      "previewText": "echo: hi"
+    },
+    {
+      "sessionKey": "agent:echo:a0123456789ab:notes",
+      "accountId": "a0123456789ab",
+      "provider": "echo",
+      "title": "Notes",
+      "kind": "side",
+      "parentSessionKey": "agent:echo:a0123456789ab:main",
+      "canSend": false,
+      "unreadCount": 0,
+      "rankTimeMs": 0,
+      "previewText": "mine",
+      "previewIsMine": true,
+      "onTopRankTimeMs": 1800000000001
+    }
+  ]
+}

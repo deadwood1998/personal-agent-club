@@ -1,0 +1,13 @@
+{
+  "hits": [
+    {
+      "sessionKey": "agent:echo:a0123456789ab:main",
+      "externalId": "m1",
+      "text": "echo: hi",
+      "role": "assistant",
+      "createTimeMs": 1800000000000,
+      "title": "Echo",
+      "provider": "echo"
+    }
+  ]
+}
