@@ -20,7 +20,7 @@ import (
 // datadir package with the key under its own name:
 //
 //	<data>/club.key                        the key of the credential files (vault.LoadKey's format), 0600
-//	<data>/club.lock                       held while the program runs (an offline import waits for it to stop)
+//	<data>/club.lock                       held while the program runs (an offline import is refused meanwhile)
 //	<data>/spaces/default/club.db          the one space this shell serves: SQLite (WAL)
 //	<data>/spaces/default/credentials.enc  its credentials, sealed with the key
 const (
