@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 )
@@ -96,6 +97,20 @@ type SendResult struct {
 	Messages []RemoteMessage
 	// Error is why a send is unconfirmed (a code safe to show).
 	Error string
+	// Quota is what the provider's answer said about the account's allowance, when it says.
+	Quota []QuotaReading
+}
+
+// QuotaReading is one dimension of an account's allowance as a provider's answer reported it (Groq's rate limit
+// headers, for example).
+type QuotaReading struct {
+	Kind      string // protocol.QuotaKindTokens, QuotaKindRequests, ...
+	Limit     float64
+	Remaining float64
+	// ResetsAt is when the window resets (Unix ms), 0 when not said.
+	ResetsAt int64
+	// Window names the window ("minute", "day"), when known.
+	Window string
 }
 
 // Adapter is one provider. A call that returns an *Error was refused by the provider (nothing was accepted); any
@@ -157,9 +172,39 @@ type HistoryWanter interface {
 	WantsHistory() bool
 }
 
-// CredentialRefresher swaps a refused credential for a fresh one ("" when it cannot be refreshed).
+// CredentialRefresher swaps a refused credential for a fresh one ("" when it cannot be refreshed). An error means
+// the provider refused the refresh.
 type CredentialRefresher interface {
 	RefreshCredential(ctx context.Context, credential string) (string, error)
+}
+
+// WatchEvent is what a watch reports about a session.
+type WatchEvent string
+
+const (
+	// WatchChanged: the session changed; read it now.
+	WatchChanged WatchEvent = "changed"
+	// WatchIdle: the agent stopped working on the session.
+	WatchIdle WatchEvent = "idle"
+)
+
+// Watcher pushes, while a reply is awaited, that a session changed or went idle. Watch calls event for each until
+// ctx ends, the provider closes the stream, or event returns false.
+type Watcher interface {
+	Watch(ctx context.Context, credential string, session SessionRef, event func(WatchEvent) bool) error
+}
+
+// LoginFlow is one sign-in in progress: the URL the user approves at, and the provider's own state (never shown).
+type LoginFlow struct {
+	URL   string
+	State any
+}
+
+// DeviceLogin is a sign-in the user approves in their own browser while club polls for the credential.
+type DeviceLogin interface {
+	StartLogin() (LoginFlow, error)
+	// PollLogin answers the credential once the user approved, "" while it is still pending.
+	PollLogin(ctx context.Context, flow LoginFlow) (credential string, err error)
 }
 
 // Common error codes.
@@ -171,12 +216,21 @@ const (
 	CodeBadResponse = "BAD_RESPONSE"
 )
 
+// More codes the adapters use.
+const (
+	CodeNetworkError  = "NETWORK_ERROR"
+	CodeUpstreamError = "UPSTREAM_ERROR"
+	CodeRequestFailed = "REQUEST_FAILED"
+)
+
 // Error is a provider's refusal or failure. Code is safe to show and log; it never carries a credential or a
 // message body.
 type Error struct {
 	Code       string
 	HTTPStatus int
 	Retryable  bool
+	// RetryAfter is how long a rate-limited provider asked to wait (Retry-After), 0 when not said.
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string {

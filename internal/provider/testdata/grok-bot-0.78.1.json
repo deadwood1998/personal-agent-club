@@ -1,0 +1,126 @@
+{
+  "GetMe": {
+    "authId": "auth0|fixture",
+    "email": "fixture@example.com"
+  },
+  "ListGrokBotAgents": {
+    "agents": [
+      {
+        "agentId": "bot_alpha",
+        "id": "srv-1",
+        "name": "Grok 秘书",
+        "kind": "GROK_BOT_AGENT_KIND_AGENT",
+        "viewerSessionId": "",
+        "updatedAtMs": "1761802000000",
+        "avatarShape": "pumpkin",
+        "avatarUrl": "https://images.example.com/bot_alpha.png"
+      },
+      {
+        "agentId": "bad id!",
+        "name": "ignored"
+      }
+    ],
+    "truncated": false
+  },
+  "ListGrokBotAgentSessions:bot_alpha": {
+    "sessions": [
+      {
+        "agentId": "bot_alpha",
+        "sessionId": "",
+        "kind": "1",
+        "createdAtMs": "1761700000000",
+        "updatedAtMs": "1761802000000",
+        "lastActivityAtMs": "1761802000000"
+      },
+      {
+        "agentId": "bot_alpha",
+        "sessionId": "sess-side-42",
+        "kind": "2",
+        "createdAtMs": "1761750000000",
+        "updatedAtMs": "1761790000000",
+        "lastActivityAtMs": "1761790000000"
+      }
+    ]
+  },
+  "ListGrokBotTranscriptEntries:bot_alpha:": {
+    "generation": 3,
+    "entries": [
+      {
+        "seq": "12",
+        "updatedSeq": "12",
+        "entryId": "e-reply",
+        "entryKind": "send-message",
+        "body": "eyJpZCI6ICJlLXJlcGx5IiwgImtpbmQiOiAic2VuZC1tZXNzYWdlIiwgIm1lc3NhZ2UiOiB7InR5cGUiOiAidGV4dCIsICJjb250ZW50IjogIuaYjuaXqSA5IOeCueaPkOmGkuS9oOW8gOS8muOAgiJ9fQ=="
+      },
+      {
+        "seq": "11",
+        "updatedSeq": "11",
+        "entryId": "e-tool",
+        "entryKind": "tool-call",
+        "body": "eyJraW5kIjogInRvb2wtY2FsbCIsICJ0ZXh0IjogImNhbGVuZGFyLmNyZWF0ZSJ9"
+      },
+      {
+        "seq": "10",
+        "updatedSeq": "10",
+        "entryId": "e-user",
+        "entryKind": "user-message",
+        "body": "eyJraW5kIjogInVzZXItbWVzc2FnZSIsICJ0ZXh0IjogIuaYjuWkqeaXqeS4iuaPkOmGkuaIkeW8gOS8miIsICJzZW50QXRNcyI6ICIxNzYxODAxOTkwMDAwIn0="
+      },
+      {
+        "seq": "9",
+        "updatedSeq": "9",
+        "entryId": "e-omitted",
+        "entryKind": "send-message",
+        "bodyOmitted": true
+      }
+    ],
+    "cloudAgentPeerIds": [],
+    "cloudAgentPeerIdsKnown": true
+  },
+  "ListGrokBotTranscriptEntries:bot_alpha:sess-side-42": {
+    "generation": 1,
+    "entries": [
+      {
+        "seq": "3",
+        "updatedSeq": "3",
+        "entryId": "side-1",
+        "entryKind": "send-message",
+        "body": "eyJraW5kIjogInNlbmQtbWVzc2FnZSIsICJtZXNzYWdlIjogeyJ0eXBlIjogInRleHQiLCAiY29udGVudCI6ICLkvqflr7nor53ph4znmoTlm57lpI0ifX0="
+      }
+    ]
+  },
+  "SendGrokBotUserMessage": {
+    "delivery": "GROK_BOT_USER_MESSAGE_DELIVERY_ACCEPTED_BOX",
+    "dispatched": true
+  },
+  "SendGrokBotUserMessage.refused": {
+    "delivery": 4
+  },
+  "GetGrokBotSendStatus": {
+    "status": "GROK_BOT_SEND_STATUS_ACCEPTED",
+    "echoEntryId": "e-user",
+    "acceptedAtMs": "1761801990000"
+  },
+  "GetGrokBotSendStatus.rejected": {
+    "status": 3,
+    "rejectionCode": "BOX_ASLEEP"
+  },
+  "GetGrokBotSendStatus.pending": {
+    "status": 4
+  },
+  "ListGrokBotAgentStatuses": {
+    "statuses": [
+      {
+        "agentId": "bot_alpha",
+        "isRunning": true,
+        "live": {
+          "agentId": "bot_alpha",
+          "sessionId": "",
+          "isRunning": true,
+          "isComposingMessage": true,
+          "updatedAtMs": "1761802000000"
+        }
+      }
+    ]
+  }
+}

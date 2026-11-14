@@ -1,0 +1,153 @@
+{
+  "agent.list": {
+    "ok": true,
+    "request_id": "req-agents",
+    "data": [
+      {
+        "id": "agent-default",
+        "task_id": "task-main-1",
+        "nickname": "小助手",
+        "about": "Personal assistant"
+      }
+    ]
+  },
+  "task.list": {
+    "ok": true,
+    "request_id": "req-tasks",
+    "data": [
+      {
+        "id": "task-sub-1",
+        "status": "stopped",
+        "created_at": 1761800000,
+        "updated_at": 1761801000,
+        "task_type": "agent_subtask",
+        "share_visibility": "private",
+        "title": "订机票",
+        "task_url": "https://manus.im/app/task-sub-1"
+      },
+      {
+        "id": "task-sub-2",
+        "status": "deleted",
+        "created_at": 1761700000,
+        "updated_at": 1761700100,
+        "deleted_at": 1761700100,
+        "task_type": "agent_subtask",
+        "task_url": "https://manus.im/app/task-sub-2"
+      }
+    ],
+    "has_more": false
+  },
+  "task.listMessages:task-main-1": {
+    "ok": true,
+    "request_id": "req-msgs",
+    "task_id": "task-main-1",
+    "messages": [
+      {
+        "id": "ev-4",
+        "type": "status_update",
+        "timestamp": 1761802004000,
+        "agent_status": "waiting",
+        "status_detail": {
+          "waiting_description": "需要你确认发送邮件"
+        },
+        "brief": "Waiting"
+      },
+      {
+        "id": "ev-3",
+        "type": "tool_used",
+        "timestamp": 1761802003000,
+        "tool": "browser",
+        "action_id": "act-1",
+        "status": "success",
+        "brief": "查询航班",
+        "message": {
+          "action": "open",
+          "param": "https://example.com/flights"
+        }
+      },
+      {
+        "id": "ev-2",
+        "type": "assistant_message",
+        "timestamp": 1761802002000,
+        "content": "好的，我来查明天去上海的航班。",
+        "attachments": [],
+        "delivery_kind": "progress"
+      },
+      {
+        "id": "ev-1",
+        "type": "user_message",
+        "timestamp": 1761802001000,
+        "content": "帮我看看明天去上海的航班",
+        "message_type": "text",
+        "attachments": [],
+        "sender": {
+          "user_id": "u1",
+          "name": "Me"
+        }
+      }
+    ],
+    "has_more": false
+  },
+  "task.listMessages:task-sub-1": {
+    "ok": true,
+    "request_id": "req-sub",
+    "task_id": "task-sub-1",
+    "messages": [
+      {
+        "id": "sub-2",
+        "type": "plan_update",
+        "timestamp": 1761801000000,
+        "steps": [
+          {
+            "status": "done",
+            "title": "搜索航班",
+            "started_at": null,
+            "end_at": null
+          },
+          {
+            "status": "doing",
+            "title": "比较价格",
+            "started_at": null,
+            "end_at": null
+          }
+        ]
+      },
+      {
+        "id": "sub-1",
+        "type": "assistant_message",
+        "timestamp": 1761800500000,
+        "content": "找到 3 个航班",
+        "attachments": [
+          {
+            "type": "file",
+            "filename": "flights.md",
+            "url": "https://files.manus.im/flights.md",
+            "content_type": "text/markdown"
+          }
+        ]
+      }
+    ],
+    "has_more": false
+  },
+  "task.sendMessage": {
+    "ok": true,
+    "request_id": "req-send",
+    "task_id": "task-main-1"
+  },
+  "error.invalid_argument": {
+    "ok": false,
+    "request_id": "req-err",
+    "error": {
+      "code": "invalid_argument",
+      "message": "text too long"
+    }
+  },
+  "error.unauthorized": {
+    "ok": false,
+    "request_id": "req-401",
+    "error": {
+      "code": "unauthenticated",
+      "message": "bad key"
+    }
+  }
+}

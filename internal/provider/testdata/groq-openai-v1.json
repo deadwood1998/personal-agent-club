@@ -1,0 +1,55 @@
+{
+  "models": {
+    "object": "list",
+    "data": [
+      {
+        "id": "openai/gpt-oss-120b",
+        "object": "model",
+        "owned_by": "OpenAI",
+        "active": true,
+        "context_window": 131072
+      },
+      {
+        "id": "llama-3.3-70b-versatile",
+        "object": "model",
+        "owned_by": "Meta",
+        "active": true,
+        "context_window": 131072
+      }
+    ]
+  },
+  "chat.completion": {
+    "id": "chatcmpl-fixture",
+    "object": "chat.completion",
+    "model": "openai/gpt-oss-120b",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "明早 9 点有 3 班直飞。"
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 42,
+      "completion_tokens": 12,
+      "total_tokens": 54
+    }
+  },
+  "error.invalid_api_key": {
+    "error": {
+      "message": "Invalid API Key",
+      "type": "invalid_request_error",
+      "code": "invalid_api_key"
+    }
+  },
+  "error.rate_limit": {
+    "error": {
+      "message": "Rate limit reached",
+      "type": "tokens",
+      "code": "rate_limit_exceeded"
+    }
+  }
+}
