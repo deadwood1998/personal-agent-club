@@ -65,14 +65,19 @@ const (
 	MethodClubLoginsBrowserInput  = "club.logins.browser.input"
 	MethodClubLoginsBrowserFinish = "club.logins.browser.finish"
 	MethodClubLoginsBrowserCancel = "club.logins.browser.cancel"
+	MethodClubOutboxDismiss       = "club.outbox.dismiss"
 )
 
+// ClubMethods are the club.* methods this version answers.
+var ClubMethods = []string{MethodClubInfo, MethodClubAccountsAdd, MethodClubAccountsUpdate, MethodClubAccountsRemove,
+	MethodClubAccountsReplaceCred, MethodClubAccountsSync, MethodClubLive, MethodClubSettingsGet, MethodClubSettingsSet,
+	MethodClubImport, MethodClubLoginsGrokBotStart, MethodClubLoginsGrokBotPoll, MethodClubLoginsGrokBotCancel,
+	MethodClubOutboxDismiss}
+
 // ClubStubMethods are the club.* methods the design names that this version answers with unsupported.
-var ClubStubMethods = []string{MethodClubAccountsUpdate, MethodClubAccountsReplaceCred, MethodClubLive,
-	MethodClubSettingsGet, MethodClubSettingsSet, MethodClubSessionsStart, MethodClubSessionsInterrupt,
-	MethodClubImport, MethodClubExport, MethodClubLoginsGrokBotStart, MethodClubLoginsGrokBotPoll,
-	MethodClubLoginsGrokBotCancel, MethodClubLoginsBrowserStart, MethodClubLoginsBrowserFrame,
-	MethodClubLoginsBrowserInput, MethodClubLoginsBrowserFinish, MethodClubLoginsBrowserCancel}
+var ClubStubMethods = []string{MethodClubSessionsStart, MethodClubSessionsInterrupt, MethodClubExport,
+	MethodClubLoginsBrowserStart, MethodClubLoginsBrowserFrame, MethodClubLoginsBrowserInput,
+	MethodClubLoginsBrowserFinish, MethodClubLoginsBrowserCancel}
 
 // Error codes a source answers with. Any other error carries only a message.
 const (
@@ -82,23 +87,75 @@ const (
 	CodeUnsupported = "unsupported"
 )
 
-// Error is a refusal on the wire: a code the caller acts on and a message for people (never a secret or a
-// message body).
+// Error is a refusal on the wire: a code the caller acts on, a message for people (never a secret or a message
+// body) and, optionally, a reason: a stable upper-case code naming the refusal more precisely (the Lark gateway's
+// agent bridge error codes, so the gateway can answer its own HTTP status). Hubs that do not know reason ignore it.
 type Error struct {
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 func (e *Error) Error() string { return e.Message }
 
-// WireError lets the Persona SDK put the code on the wire (ext.Coded).
-func (e *Error) WireError() (string, json.RawMessage) { return e.Code, nil }
+// WireError lets the Persona SDK put the code on the wire (ext.Coded); the reason goes in the error's data.
+func (e *Error) WireError() (string, json.RawMessage) {
+	if e.Reason == "" {
+		return e.Code, nil
+	}
+	data, _ := json.Marshal(map[string]string{"reason": e.Reason})
+	return e.Code, data
+}
 
 // NotFound, Invalid, Conflict and Unsupported build an Error with that code.
 func NotFound(msg string) *Error    { return &Error{Code: CodeNotFound, Message: msg} }
 func Invalid(msg string) *Error     { return &Error{Code: CodeInvalid, Message: msg} }
 func Conflict(msg string) *Error    { return &Error{Code: CodeConflict, Message: msg} }
 func Unsupported(msg string) *Error { return &Error{Code: CodeUnsupported, Message: msg} }
+
+// Because returns a copy of e with reason set.
+func (e *Error) Because(reason string) *Error {
+	c := *e
+	c.Reason = reason
+	return &c
+}
+
+// Failure is an error with a reason and no protocol code (a provider failure: HTTP 502 over serve).
+func Failure(reason, msg string) *Error { return &Error{Reason: reason, Message: msg} }
+
+// ReasonOf is err's reason, "" when it has none.
+func ReasonOf(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Reason
+	}
+	return ""
+}
+
+// Reasons. They are the error codes of the Lark gateway's built-in agent bridge (service and routes), with the
+// HTTP status the gateway answers them with; a provider's own code (AUTH_FAILED, RATE_LIMITED, MODEL_UNAVAILABLE…)
+// may appear as a reason too, where the gateway passes it on.
+const (
+	ReasonDisabled            = "AGENT_BRIDGE_DISABLED"      // 404; never sent by club, which is never off
+	ReasonInvalidInput        = "INVALID_AGENT_BRIDGE_INPUT" // 400
+	ReasonInvalidCursor       = "INVALID_CURSOR"             // 400
+	ReasonSessionNotFound     = "AGENT_SESSION_NOT_FOUND"    // 404
+	ReasonAccountNotFound     = "AGENT_ACCOUNT_NOT_FOUND"    // 404
+	ReasonLoginNotFound       = "LOGIN_NOT_FOUND"            // 404
+	ReasonSessionReadOnly     = "SESSION_READ_ONLY"          // 409
+	ReasonAccountPaused       = "ACCOUNT_PAUSED"             // 409
+	ReasonClientIDInUse       = "CLIENT_ID_IN_USE"           // 409
+	ReasonNotPending          = "NOT_PENDING"                // 409
+	ReasonAccountMismatch     = "ACCOUNT_MISMATCH"           // 409
+	ReasonProviderMismatch    = "PROVIDER_MISMATCH"          // 409
+	ReasonLoginLimit          = "LOGIN_LIMIT"                // 429
+	ReasonProviderUnavailable = "PROVIDER_UNAVAILABLE"       // 422
+	ReasonNotSignedIn         = "NOT_SIGNED_IN"              // 422; browser sign-ins, not in this version
+	ReasonBrowserUnavailable  = "BROWSER_UNAVAILABLE"        // 503; browser sign-ins, not in this version
+	ReasonBrowserLoginLimit   = "BROWSER_LOGIN_LIMIT"        // 429; browser sign-ins, not in this version
+	// ReasonAlreadyPaired is club's own: the same remote account is already paired in this space (409).
+	ReasonAlreadyPaired = "ACCOUNT_ALREADY_PAIRED"
+)
 
 // CodeOf is err's protocol code, "" when it has none.
 func CodeOf(err error) string {
@@ -139,6 +196,8 @@ type Account struct {
 	LastSyncedAt      int64  `json:"lastSyncedAt,omitempty"`
 	LastError         string `json:"lastError,omitempty"`
 	SessionCount      int    `json:"sessionCount"`
+	AssistantControl  string `json:"assistantControl,omitempty"`
+	ShowQuota         bool   `json:"showQuota,omitempty"`
 	Quota             *Quota `json:"quota,omitempty"`
 }
 
@@ -168,8 +227,9 @@ type Session struct {
 	Quota            *Quota `json:"quota,omitempty"`
 }
 
-// Block is one block of a message: text, tool-call {name,status,summary,input}, tool-result, or anything newer,
-// whose JSON is kept in Raw and written back unchanged.
+// Block is one block of a message: text, tool-call {name,status,summary,input}, tool-result {name,text}, status
+// {status,text}, attachment {name,kind,url}, error {text}, or anything newer, whose JSON is kept in Raw and written
+// back unchanged.
 type Block struct {
 	Type    string          `json:"type"`
 	Text    string          `json:"text,omitempty"`
@@ -177,6 +237,8 @@ type Block struct {
 	Status  string          `json:"status,omitempty"`
 	Summary string          `json:"summary,omitempty"`
 	Input   json.RawMessage `json:"input,omitempty"`
+	Kind    string          `json:"kind,omitempty"`
+	URL     string          `json:"url,omitempty"`
 	Raw     json.RawMessage `json:"-"`
 }
 
@@ -375,4 +437,108 @@ type RemoveAccountParams struct {
 // AccountParams address one account (club.accounts.sync).
 type AccountParams struct {
 	AccountID string `json:"account_id"`
+}
+
+// UpdateAccountParams are club.accounts.update's: the fields given change.
+type UpdateAccountParams struct {
+	AccountID        string  `json:"account_id"`
+	Paused           *bool   `json:"paused,omitempty"`
+	DisplayName      *string `json:"display_name,omitempty"`
+	AssistantControl *string `json:"assistant_control,omitempty"`
+	ShowQuota        *bool   `json:"show_quota,omitempty"`
+}
+
+// ReplaceCredentialParams are club.accounts.replace_credential's.
+type ReplaceCredentialParams struct {
+	AccountID  string `json:"account_id"`
+	Credential string `json:"credential"`
+}
+
+// GrokBotLoginStartParams are club.logins.grok_bot.start's: account_id signs that account in again.
+type GrokBotLoginStartParams struct {
+	AccountID string `json:"account_id,omitempty"`
+}
+
+// GrokBotLoginStart is club.logins.grok_bot.start's answer (the gateway's GrokBotLoginStart).
+type GrokBotLoginStart struct {
+	LoginID  string `json:"loginId"`
+	LoginURL string `json:"loginUrl"`
+}
+
+// LoginParams address one sign-in (club.logins.grok_bot.poll and cancel); DisplayName names a newly paired account.
+type LoginParams struct {
+	LoginID     string `json:"login_id"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+// Login poll statuses.
+const (
+	LoginPending = "pending"
+	LoginDone    = "done"
+)
+
+// GrokBotLoginPoll is club.logins.grok_bot.poll's answer (the gateway's GrokBotLoginPoll): pending, or done with
+// the account.
+type GrokBotLoginPoll struct {
+	Status  string   `json:"status"`
+	Account *Account `json:"account,omitempty"`
+}
+
+// SessionParams address one session (club.live).
+type SessionParams struct {
+	SessionKey string `json:"session_key"`
+}
+
+// LiveState is club.live's answer (the gateway's AgentLiveState); Supported is false when the provider cannot say.
+type LiveState struct {
+	Supported bool `json:"supported"`
+	Running   bool `json:"running"`
+	Composing bool `json:"composing"`
+}
+
+// BrowserIdentity is how a browser presents itself to sign-in pages (the gateway's AgentBrowserIdentity). Club
+// only keeps it in this version.
+type BrowserIdentity struct {
+	UserAgent string   `json:"userAgent"`
+	Locale    string   `json:"locale"`
+	Timezone  string   `json:"timezone"`
+	ExtraArgs []string `json:"extraArgs"`
+}
+
+// Settings is club.settings.get's and set's answer.
+type Settings struct {
+	BrowserIdentity BrowserIdentity `json:"browserIdentity"`
+}
+
+// SettingsParams are club.settings.set's.
+type SettingsParams struct {
+	BrowserIdentity *BrowserIdentity `json:"browser_identity"`
+}
+
+// OutboxParams address one send (club.outbox.dismiss).
+type OutboxParams struct {
+	SessionKey string `json:"session_key"`
+	ClientID   string `json:"client_id"`
+}
+
+// ImportParams are club.import's: the path of an import bundle on club's machine.
+type ImportParams struct {
+	Path string `json:"path"`
+}
+
+// ImportedAccount is what club.import checked for one account.
+type ImportedAccount struct {
+	AccountID       string `json:"accountId"`
+	Provider        string `json:"provider"`
+	Verified        bool   `json:"verified"`
+	Sessions        int    `json:"sessions"`
+	Messages        int    `json:"messages"`
+	LatestMessageMs int64  `json:"latestMessageMs"`
+	// Error is why Verified is false: a provider code, NO_CREDENTIAL, PROVIDER_UNAVAILABLE or REMOVED.
+	Error string `json:"error,omitempty"`
+}
+
+// ImportResult is club.import's answer.
+type ImportResult struct {
+	Accounts []ImportedAccount `json:"accounts"`
 }

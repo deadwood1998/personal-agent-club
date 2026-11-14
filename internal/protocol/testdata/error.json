@@ -1,4 +1,5 @@
 {
   "code": "not_found",
-  "message": "no such session"
+  "message": "no such session",
+  "reason": "AGENT_SESSION_NOT_FOUND"
 }

@@ -1,0 +1,40 @@
+{
+  "grok_bot_start": {
+    "account_id": "a0123456789ab"
+  },
+  "import": {
+    "path": "/tmp/bundle.json"
+  },
+  "live": {
+    "session_key": "k"
+  },
+  "login": {
+    "login_id": "g0123456789ab",
+    "display_name": "Grok"
+  },
+  "outbox_dismiss": {
+    "session_key": "k",
+    "client_id": "00000000-0000-4000-8000-000000000001"
+  },
+  "replace_credential": {
+    "account_id": "a0123456789ab",
+    "credential": "c"
+  },
+  "settings_set": {
+    "browser_identity": {
+      "userAgent": "ua",
+      "locale": "",
+      "timezone": "",
+      "extraArgs": [
+        "--mute-audio"
+      ]
+    }
+  },
+  "update": {
+    "account_id": "a0123456789ab",
+    "paused": true,
+    "display_name": "x",
+    "assistant_control": "read",
+    "show_quota": false
+  }
+}

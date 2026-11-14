@@ -60,7 +60,33 @@ func TestGolden(t *testing.T) {
 			"mark_read":      MarkReadParams{SessionKey: "k"},
 			"search":         SearchParams{Q: "hi"},
 		},
-		"error": Error{Code: CodeNotFound, Message: "no such session"},
+		"error":       Error{Code: CodeNotFound, Message: "no such session", Reason: ReasonSessionNotFound},
+		"error_plain": Error{Message: "upstream failed", Reason: "UPSTREAM_ERROR"},
+		"account_full": Account{AccountID: "a0123456789ab", Provider: "groq", DisplayName: "Groq", Status: AccountActive,
+			ExternalAccountID: "groq", SessionCount: 1, AssistantControl: "off", ShowQuota: true,
+			Quota: &Quota{State: QuotaLow, Remaining: ptr(0.1), Kind: QuotaKindRequests, Source: QuotaSourceProvider, Show: true}},
+		"club_results": map[string]any{
+			"grok_bot_login_start": GrokBotLoginStart{LoginID: "g0123456789ab", LoginURL: "https://example.com/login?uuid=x"},
+			"grok_bot_login_poll":  GrokBotLoginPoll{Status: LoginPending},
+			"grok_bot_login_done": GrokBotLoginPoll{Status: LoginDone, Account: &Account{AccountID: "a0123456789ab",
+				Provider: "grok_bot", DisplayName: "Grok Bot", Status: AccountActive}},
+			"live":     LiveState{Supported: true, Running: true},
+			"settings": Settings{BrowserIdentity: BrowserIdentity{Locale: "zh-CN", ExtraArgs: []string{}}},
+			"import": ImportResult{Accounts: []ImportedAccount{{AccountID: "a0123456789ab", Provider: "cue", Verified: true,
+				Sessions: 2, Messages: 6, LatestMessageMs: 1800000000000}, {AccountID: "a0123456789ac", Provider: "groq",
+				Error: "NO_CREDENTIAL"}}},
+		},
+		"club_params": map[string]any{
+			"update": UpdateAccountParams{AccountID: "a0123456789ab", Paused: ptr(true), DisplayName: ptr("x"),
+				AssistantControl: ptr("read"), ShowQuota: ptr(false)},
+			"replace_credential": ReplaceCredentialParams{AccountID: "a0123456789ab", Credential: "c"},
+			"grok_bot_start":     GrokBotLoginStartParams{AccountID: "a0123456789ab"},
+			"login":              LoginParams{LoginID: "g0123456789ab", DisplayName: "Grok"},
+			"live":               SessionParams{SessionKey: "k"},
+			"settings_set":       SettingsParams{BrowserIdentity: &BrowserIdentity{UserAgent: "ua", ExtraArgs: []string{"--mute-audio"}}},
+			"outbox_dismiss":     OutboxParams{SessionKey: "k", ClientID: "00000000-0000-4000-8000-000000000001"},
+			"import":             ImportParams{Path: "/tmp/bundle.json"},
+		},
 		"quota": Quota{State: QuotaOK, Remaining: ptr(0.62), Kind: QuotaKindTokens, Label: "62% left", ResetsAt: 1794500000000,
 			CheckedAt: 1794496400000, Source: QuotaSourceProvider, Stale: false, Show: true},
 		"quota_exhausted": Quota{State: QuotaExhausted, Source: QuotaSourceResponse, ResetsAt: 1794500000000},
@@ -116,6 +142,17 @@ func TestDecodeHubShapes(t *testing.T) {
 	}
 	if m.Local == nil || m.Local.Status != LocalSent {
 		t.Fatalf("%+v", m)
+	}
+}
+
+func TestReasonOnTheWire(t *testing.T) {
+	e := NotFound("no such session").Because(ReasonSessionNotFound)
+	code, data := e.WireError()
+	if code != CodeNotFound || string(data) != `{"reason":"AGENT_SESSION_NOT_FOUND"}` || ReasonOf(e) != ReasonSessionNotFound {
+		t.Fatalf("%s %s", code, data)
+	}
+	if _, data := NotFound("x").WireError(); data != nil {
+		t.Fatalf("data without a reason: %s", data)
 	}
 }
 

@@ -1,0 +1,53 @@
+{
+  "grok_bot_login_done": {
+    "status": "done",
+    "account": {
+      "accountId": "a0123456789ab",
+      "provider": "grok_bot",
+      "displayName": "Grok Bot",
+      "status": "active",
+      "sessionCount": 0
+    }
+  },
+  "grok_bot_login_poll": {
+    "status": "pending"
+  },
+  "grok_bot_login_start": {
+    "loginId": "g0123456789ab",
+    "loginUrl": "https://example.com/login?uuid=x"
+  },
+  "import": {
+    "accounts": [
+      {
+        "accountId": "a0123456789ab",
+        "provider": "cue",
+        "verified": true,
+        "sessions": 2,
+        "messages": 6,
+        "latestMessageMs": 1800000000000
+      },
+      {
+        "accountId": "a0123456789ac",
+        "provider": "groq",
+        "verified": false,
+        "sessions": 0,
+        "messages": 0,
+        "latestMessageMs": 0,
+        "error": "NO_CREDENTIAL"
+      }
+    ]
+  },
+  "live": {
+    "supported": true,
+    "running": true,
+    "composing": false
+  },
+  "settings": {
+    "browserIdentity": {
+      "userAgent": "",
+      "locale": "zh-CN",
+      "timezone": "",
+      "extraArgs": []
+    }
+  }
+}

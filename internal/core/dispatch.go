@@ -39,8 +39,7 @@ func (c *Club) Call(ctx context.Context, space, method string, params json.RawMe
 }
 
 // clubMethods are the club.* methods this version knows (answered or stubbed).
-var clubMethods = append([]string{protocol.MethodClubInfo, protocol.MethodClubAccountsAdd,
-	protocol.MethodClubAccountsRemove, protocol.MethodClubAccountsSync}, protocol.ClubStubMethods...)
+var clubMethods = append(slices.Clone(protocol.ClubMethods), protocol.ClubStubMethods...)
 
 func (s *Space) call(ctx context.Context, method, name string, params json.RawMessage) (any, error) {
 	if strings.HasPrefix(method, protocol.ClubNamespace+".") {

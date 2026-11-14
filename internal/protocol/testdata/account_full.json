@@ -1,0 +1,18 @@
+{
+  "accountId": "a0123456789ab",
+  "provider": "groq",
+  "displayName": "Groq",
+  "status": "active",
+  "externalAccountId": "groq",
+  "sessionCount": 1,
+  "assistantControl": "off",
+  "showQuota": true,
+  "quota": {
+    "state": "low",
+    "remaining": 0.1,
+    "kind": "requests",
+    "source": "provider",
+    "stale": false,
+    "show": true
+  }
+}
