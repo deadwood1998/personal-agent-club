@@ -1,6 +1,10 @@
 package providers
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/nwverse/personal-agent-club/internal/protocol"
@@ -36,3 +40,35 @@ func TestFromEnv(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 }
+
+// A host's own client carries every provider request (here, through a fake "proxy" transport) and still never
+// follows a redirect.
+func TestRegistryUsesAHandedClient(t *testing.T) {
+	var hosts []string
+	rt := roundTrip(func(r *http.Request) (*http.Response, error) {
+		hosts = append(hosts, r.URL.Host)
+		h := http.Header{"Location": {"https://elsewhere.example/"}, "Content-Type": {"application/json"}}
+		return &http.Response{StatusCode: http.StatusFound, Header: h, Body: io.NopCloser(strings.NewReader("{}")), Request: r}, nil
+	})
+	r, err := Registry(Config{Client: &http.Client{Transport: rt}, DemoEcho: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groq, _ := r.Get("groq")
+	if _, err := groq.Verify(context.Background(), "fixture-key-0001"); err == nil {
+		t.Fatal("a redirect was followed or accepted")
+	}
+	if len(hosts) != 1 || hosts[0] != "api.groq.com" {
+		t.Fatalf("requests went to %v", hosts)
+	}
+	if _, ok := r.Get("echo"); !ok {
+		t.Fatal("DemoEcho did not add echo")
+	}
+	if _, err := Registry(Config{Client: http.DefaultClient, Proxy: "socks5://127.0.0.1:1080"}); err == nil {
+		t.Fatal("a client and a proxy at once were accepted")
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

@@ -1,13 +1,17 @@
 // Package providers builds the registry of the API providers club ships: cue, grok_bot and groq, all through one
-// HTTP client and its proxy. The browser providers (muse, dots, claude_duet) are not in this version.
+// HTTP client and its proxy. The browser providers (muse, dots, claude_duet) are not in this version. Both shells
+// build their registry here.
 package providers
 
 import (
+	"errors"
+	"net/http"
 	"os"
 	"strings"
 
 	"github.com/nwverse/personal-agent-club/internal/provider"
 	"github.com/nwverse/personal-agent-club/internal/provider/cue"
+	"github.com/nwverse/personal-agent-club/internal/provider/echo"
 	"github.com/nwverse/personal-agent-club/internal/provider/grokbot"
 	"github.com/nwverse/personal-agent-club/internal/provider/groq"
 	"github.com/nwverse/personal-agent-club/internal/provider/web"
@@ -26,6 +30,12 @@ type Config struct {
 	Proxy string
 	// GroqModel is the model Groq accounts ask; "" is groq.DefaultModel.
 	GroqModel string
+	// Client, when set, is the HTTP client every provider request goes through instead of one built for Proxy (the
+	// Persona shell hands the hub's, which goes out through the sandbox's egress proxy). Redirects are refused either
+	// way. Proxy must then be "".
+	Client *http.Client
+	// DemoEcho adds the in-memory echo provider (demos and tests only).
+	DemoEcho bool
 }
 
 // FromEnv is the configuration in the environment.
@@ -35,13 +45,25 @@ func FromEnv() Config {
 
 // Registry is a registry with the API providers.
 func Registry(c Config) (*provider.Registry, error) {
-	client, err := web.NewClient(c.Proxy)
-	if err != nil {
-		return nil, err
+	var client *http.Client
+	switch {
+	case c.Client != nil && c.Proxy != "":
+		return nil, errors.New("providers: a client and a proxy were both given")
+	case c.Client != nil:
+		client = web.UseClient(c.Client)
+	default:
+		var err error
+		if client, err = web.NewClient(c.Proxy); err != nil {
+			return nil, err
+		}
 	}
-	return provider.NewRegistry(
+	r := provider.NewRegistry(
 		cue.New(cue.Options{Client: client}),
 		grokbot.New(grokbot.Options{Client: client}),
 		groq.New(groq.Options{Client: client, Model: c.GroqModel}),
-	), nil
+	)
+	if c.DemoEcho {
+		r.Register(echo.New())
+	}
+	return r, nil
 }

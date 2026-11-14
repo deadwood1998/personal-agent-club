@@ -43,6 +43,14 @@ func NewClient(proxy string) (*http.Client, error) {
 	return &http.Client{Transport: t, CheckRedirect: func(*http.Request, []*http.Request) error { return errRedirect }}, nil
 }
 
+// UseClient is c as a provider client: a copy that refuses redirects, as NewClient's does. c's transport (and so
+// its proxy) is kept: for a host that hands its own client (the Persona hub's egress proxy).
+func UseClient(c *http.Client) *http.Client {
+	out := *c
+	out.CheckRedirect = func(*http.Request, []*http.Request) error { return errRedirect }
+	return &out
+}
+
 // ParseProxy checks a proxy URL.
 func ParseProxy(v string) (*url.URL, error) {
 	u, err := url.Parse(strings.TrimSpace(v))
