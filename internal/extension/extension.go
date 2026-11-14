@@ -1,11 +1,14 @@
-// Package extension is the Persona shell: club as a Persona extension program, contributing the agent source "pac".
-// The hub's agentsrc.* calls go to the club's default space through the same core.Club.Call the serve shell uses,
-// and the space's changes go back to the hub as agentsrc.updated.
+// Package extension is the Persona shell: club as a Persona extension program. It contributes the agent source "pac"
+// (the hub's agentsrc.* calls go to the club's default space through the same core.Club.Call the serve shell uses,
+// and the space's changes go back as agentsrc.updated), the accounts page (ui "accounts", accounts.go) and the
+// connector "club" carrying the assistant's club_agent_* tools (tools.go). Its data lives in the extension's data
+// directory (storage.go).
 package extension
 
 import (
 	"context"
 	"encoding/json"
+	"slices"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
@@ -48,12 +51,27 @@ func Program(club *core.Club, version string) ext.Program {
 			}
 			sub := club.Subscribe(core.DefaultSpace)
 			go forward(ctx, sub, hub, club)
-			return nil, nil
+			// The connector as the manifest has it: the hub wants the program to say it has it.
+			var m struct {
+				Contributes struct {
+					Connectors json.RawMessage `json:"connectors"`
+				} `json:"contributes"`
+			}
+			if err := json.Unmarshal(pac.Manifest, &m); err != nil {
+				return nil, err
+			}
+			return map[string]any{"connectors": m.Contributes.Connectors}, nil
 		},
+		UI: map[string]ext.Page{AccountsUI: accountsPage(club)},
 		Namespaces: map[string]ext.Handler{
+			ext.ConnectorNamespace: toolsHandler(club),
 			protocol.AgentSourceNamespace: func(ctx context.Context, method string, params json.RawMessage) (any, error) {
 				if c := ext.Contribution(params); c != "" && c != Contribution {
 					return nil, ext.NoContribution(c)
+				}
+				// The hub tells "no such method" (unknown_method) from "this source cannot" (unsupported).
+				if !slices.Contains(protocol.AgentSourceMethods, method) {
+					return nil, ext.UnknownMethod(protocol.AgentSourceNamespace + "." + method)
 				}
 				return club.Call(ctx, core.DefaultSpace, protocol.AgentSourceNamespace+"."+method, params)
 			},
@@ -61,7 +79,8 @@ func Program(club *core.Club, version string) ext.Program {
 	}
 }
 
-// forward sends the space's changes to the hub until the program ends, then closes the club.
+// forward sends the space's changes to the hub until the program ends, then closes the club. A change also redraws
+// the accounts page where it is on screen (the hub coalesces these).
 func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *core.Club) {
 	defer club.Close()
 	defer sub.Close()
@@ -73,6 +92,7 @@ func forward(ctx context.Context, sub *core.Subscription, hub *ext.Hub, club *co
 			for _, e := range sub.Take() {
 				_ = hub.Notify(protocol.EventUpdated, protocol.UpdatedEvent{Contribution: Contribution, SessionKeys: e.SessionKeys})
 			}
+			_ = hub.Invalidate(AccountsUI)
 		}
 	}
 }

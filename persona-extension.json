@@ -2,8 +2,8 @@
   "manifest_version": 1,
   "id": "personal-agent-club",
   "name": "Personal Agent Club",
-  "version": "0.1.0",
-  "description": "Personal agents (paired accounts at agent services) as a source on the Agents page: their sessions, messages, sending and search. Skeleton: no real provider yet.",
+  "version": "0.2.0",
+  "description": "Personal agents (paired accounts at Cue, Grok Bot and Groq) as a source on the Agents page: their sessions, messages, sending and search. Accounts are paired on the extension's Accounts page; the assistant can drive the accounts you hand it.",
   "publisher": "nwverse",
   "engines": {
     "extension_protocol": 1
@@ -23,7 +23,33 @@
     "agent_sources": [
       {
         "id": "pac",
-        "name": "Personal Agent Club"
+        "name": "Personal Agent Club",
+        "providers": [
+          "cue",
+          "grok_bot",
+          "groq"
+        ]
+      }
+    ],
+    "ui": [
+      {
+        "id": "accounts",
+        "title": "Accounts",
+        "placement": "plugin_page"
+      }
+    ],
+    "connectors": [
+      {
+        "id": "club",
+        "name": "Personal Agent Club",
+        "capabilities": [
+          "status",
+          "tools",
+          "actions"
+        ],
+        "confirm_always": [
+          "club_agent_*"
+        ]
       }
     ]
   },
@@ -39,6 +65,10 @@
     }
   },
   "permissions": {
-    "network": []
+    "network": [
+      "api.manus.ai",
+      "api2.cursor.sh",
+      "api.groq.com"
+    ]
   }
 }

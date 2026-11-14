@@ -17,7 +17,6 @@ import (
 	"github.com/nwverse/persona/sdk/go/ext"
 
 	pac "github.com/nwverse/personal-agent-club"
-	"github.com/nwverse/personal-agent-club/internal/core"
 	"github.com/nwverse/personal-agent-club/internal/extension"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider"
@@ -78,7 +77,11 @@ func runWith(args []string, d deps) int {
 			fmt.Fprint(d.stderr, usage)
 			return 2
 		}
-		club := core.New(core.Options{Version: version, Registry: provider.NewRegistry(), Log: logger(d.stderr)})
+		club, _, err := extension.NewClub(version, logger(d.stderr))
+		if err != nil {
+			fmt.Fprintln(d.stderr, "personal-agent-club:", err)
+			return 1
+		}
 		ext.Main(extension.Program(club, version))
 		return 0
 	}

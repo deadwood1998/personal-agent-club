@@ -99,6 +99,8 @@ func startHub(t *testing.T, run exttest.Run) *hub {
 				continue
 			}
 			switch {
+			case f.Event == "ui.invalidate":
+				// the accounts page redrawn on a change: nothing to check here
 			case f.Event != "":
 				if f.Event != protocol.EventUpdated {
 					t.Errorf("unexpected event %s", f.Event)
@@ -178,7 +180,13 @@ func (h *hub) Call(method string, params, out any) error {
 	return asProtocol(h.call(method, p, out))
 }
 
+// asProtocol turns the wire's refusal into the protocol's. One code differs by transport: a method the source does
+// not have is unknown_method on the extension protocol (the hub's own check, `personad extension test`, insists on
+// it), where the serve shell says unsupported; to the suite both are "not this method".
 func asProtocol(err error) error {
+	if e, ok := err.(*ext.Error); ok && e.Code == wire.ErrorCodeUnknownMethod {
+		return &protocol.Error{Code: protocol.CodeUnsupported, Message: e.Message}
+	}
 	if e, ok := err.(*ext.Error); ok && e.Code != "" {
 		return &protocol.Error{Code: e.Code, Message: e.Message}
 	}

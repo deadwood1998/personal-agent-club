@@ -4,7 +4,7 @@ VERSION ?=
 LDFLAGS := $(if $(VERSION),-X main.version=$(VERSION))
 PLATFORMS := linux-amd64 linux-arm64 darwin-arm64 darwin-amd64
 
-.PHONY: all check fmt vet test build dist clean
+.PHONY: all check fmt vet test build dist package clean
 
 all: check build
 
@@ -29,6 +29,10 @@ dist:
 		echo "bin/personal-agent-club-$$p"; \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/personal-agent-club-$$p ./cmd/personal-agent-club || exit 1; \
 	done
+
+# The Persona extension package: dist/personal-agent-club-<version>.tar.gz (+ .sha256), manifest and programs only.
+package:
+	GO=$(GO) VERSION=$(VERSION) scripts/package.sh
 
 clean:
 	rm -rf bin dist

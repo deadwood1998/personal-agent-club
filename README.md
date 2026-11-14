@@ -130,10 +130,12 @@ Provider requests never follow a redirect, so a credential header never goes to 
 
 ### As a Persona extension
 
-`persona-extension.json` is the manifest: extension id `personal-agent-club`, one `agent_sources` contribution `pac`,
-`activation_events: on_startup`. `make dist` builds the four binaries it names under `bin/`. The configuration switch
-`demo_echo` adds the echo provider. In this version the extension keeps its spaces in memory and has no providers but
-the demo one.
+`persona-extension.json` is the manifest: extension id `personal-agent-club`, the agent source `pac` (providers Cue,
+Grok Bot and Groq), the Accounts page (`ui` `accounts`) and the connector `club` with the assistant's `club_agent_*`
+tools, `activation_events: on_startup`, and network access to the three providers' API hosts only. `make package`
+builds `dist/personal-agent-club-<version>.tar.gz` (manifest and the four programs), `scripts/persona-test.sh` holds it
+to the hub's own checks, and [docs/persona-install.md](docs/persona-install.md) installs it on a hub. The configuration
+switch `demo_echo` adds the echo provider. In this version the extension still keeps its spaces in memory.
 
 ## Providers
 
