@@ -549,3 +549,17 @@ func TestGrokBotSignIn(t *testing.T) {
 		t.Fatalf("signing in again paired another account: %+v", status.Accounts)
 	}
 }
+
+func TestAnExhaustedAccountIsNotSentToByTheAssistant(t *testing.T) {
+	if err := exhausted(nil); err != nil {
+		t.Fatalf("unknown quota: %v", err)
+	}
+	if err := exhausted(&protocol.Quota{State: protocol.QuotaLow}); err != nil {
+		t.Fatalf("low quota: %v", err)
+	}
+	for _, q := range []*protocol.Quota{{State: protocol.QuotaExhausted}, {State: protocol.QuotaExhausted, ResetsAt: 1_800_000_000_000}} {
+		if err := exhausted(q); protocol.CodeOf(err) != protocol.CodeConflict {
+			t.Fatalf("exhausted quota %+v: %v", q, err)
+		}
+	}
+}

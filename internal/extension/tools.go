@@ -410,8 +410,23 @@ func (t *tools) sendable(ctx context.Context, key, text string, op core.Operatio
 		if strings.TrimSpace(text) == "" {
 			return nil, protocol.Session{}, "", protocol.Invalid("text is required")
 		}
+		if err := exhausted(sess.Quota); err != nil {
+			return nil, protocol.Session{}, "", err
+		}
 	}
 	return space, sess, level, nil
+}
+
+// exhausted refuses a send for the assistant when the account's quota is known to be used up: the assistant does
+// not try, where the user's own send still does.
+func exhausted(q *protocol.Quota) error {
+	if q == nil || q.State != protocol.QuotaExhausted {
+		return nil
+	}
+	if q.ResetsAt != 0 {
+		return protocol.Conflict("这个账号的额度已用尽，" + time.UnixMilli(q.ResetsAt).UTC().Format(time.RFC3339) + " 恢复，现在不发送")
+	}
+	return protocol.Conflict("这个账号的额度已用尽，现在不发送")
 }
 
 func (t *tools) account(ctx context.Context, id string, op core.Operation) (protocol.Account, error) {
