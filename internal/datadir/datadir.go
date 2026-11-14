@@ -12,10 +12,12 @@ package datadir
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/nwverse/personal-agent-club/internal/store"
 	"github.com/nwverse/personal-agent-club/internal/vault"
@@ -42,16 +44,25 @@ func KeyPath(root string) string { return filepath.Join(root, "key") }
 func SpacePath(root, space string) string { return filepath.Join(root, "spaces", space) }
 
 // Open opens (creating it, 0700) the data directory at root and takes its lock. keyFile "" is <root>/key; a missing
-// key file is created with a fresh key.
+// key file is created with a fresh key. A reader (OpenReadOnly) may hold the lock shared for a moment: Open waits for
+// it up to lockWait before it answers ErrInUse.
 func Open(root, keyFile string) (*Dir, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return nil, err
 	}
-	lock, err := os.OpenFile(filepath.Join(root, "club.lock"), os.O_RDWR|os.O_CREATE, 0o600)
+	lock, err := os.OpenFile(filepath.Join(root, lockName), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	deadline := time.Now().Add(lockWait)
+	for {
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EWOULDBLOCK) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err != nil {
 		_ = lock.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
 			return nil, ErrInUse
@@ -69,6 +80,11 @@ func Open(root, keyFile string) (*Dir, error) {
 	return &Dir{root: root, key: key, lock: lock}, nil
 }
 
+const (
+	lockName = "club.lock"
+	lockWait = time.Second
+)
+
 // Root is the directory's path.
 func (d *Dir) Root() string { return d.root }
 
@@ -85,9 +101,13 @@ func (d *Dir) OpenSpace(name string) (store.Store, vault.Vault, error) {
 		return nil, nil, err
 	}
 	v, err := vault.OpenFile(filepath.Join(dir, "credentials.enc"), d.key, name)
+	if err == nil {
+		// A key that does not open the credentials already there is refused now, not at the first send.
+		err = v.Check()
+	}
 	if err != nil {
 		_ = st.Close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("space %s: %w", name, err)
 	}
 	d.stores = append(d.stores, st)
 	return st, v, nil
@@ -115,10 +135,63 @@ func HasSpace(root, space string) bool {
 	return err == nil
 }
 
-// OpenReadOnly opens a space's store read-only, without the lock: for reading while the owner runs.
-func OpenReadOnly(root, space string) (*store.SQLite, error) {
+// Spaces are the spaces that exist in the directory at root, by name.
+func Spaces(root string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Join(root, "spaces"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && HasSpace(root, e.Name()) {
+			out = append(out, e.Name())
+		}
+	}
+	return out, nil
+}
+
+// ReadOnly is a space's store opened for reading while another process may own the directory.
+type ReadOnly struct {
+	*store.SQLite
+	lock *os.File
+}
+
+// Close closes the store and lets go of the directory.
+func (r *ReadOnly) Close() error {
+	err := r.SQLite.Close()
+	if r.lock != nil {
+		err = errors.Join(err, r.lock.Close())
+	}
+	return err
+}
+
+// OpenReadOnly opens a space's store read-only, without taking the directory: for reading while the owner runs. It
+// creates and changes nothing in the directory. While no process owns it (the lock is free; it is then held shared
+// until Close, so none starts meanwhile) and no -wal file is left over, the database file is read alone; while an
+// owner runs, the -wal and -shm files it keeps are read alongside.
+func OpenReadOnly(root, space string) (*ReadOnly, error) {
 	if !HasSpace(root, space) {
 		return nil, fmt.Errorf("no space %q in %s", space, root)
 	}
-	return store.OpenSQLiteReadOnly(filepath.Join(SpacePath(root, space), "club.db"))
+	path := filepath.Join(SpacePath(root, space), "club.db")
+	lock, err := os.Open(filepath.Join(root, lockName))
+	if err == nil && syscall.Flock(int(lock.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil {
+		_ = lock.Close()
+		lock = nil
+	} else if err != nil {
+		lock = nil
+	}
+	_, walErr := os.Stat(path + "-wal")
+	immutable := lock != nil && errors.Is(walErr, fs.ErrNotExist)
+	st, err := store.OpenSQLiteReadOnly(path, immutable)
+	if err != nil {
+		if lock != nil {
+			_ = lock.Close()
+		}
+		return nil, err
+	}
+	return &ReadOnly{SQLite: st, lock: lock}, nil
 }

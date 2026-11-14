@@ -141,8 +141,11 @@ func OpenSQLite(path string) (*SQLite, error) {
 	return s, nil
 }
 
-// OpenSQLiteReadOnly opens an existing store for reading only; it is never migrated or written.
-func OpenSQLiteReadOnly(path string) (*SQLite, error) {
+// OpenSQLiteReadOnly opens an existing store for reading only; it is never migrated or written. A WAL database
+// read this way gets its -wal and -shm files created when they are missing (SQLite needs them to read alongside a
+// writer); immutable instead reads the database file alone and creates nothing, which is only right when no
+// process has the store open for writing and no -wal file is left over.
+func OpenSQLiteReadOnly(path string, immutable bool) (*SQLite, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
@@ -150,6 +153,9 @@ func OpenSQLiteReadOnly(path string) (*SQLite, error) {
 	q.Add("_pragma", "busy_timeout(10000)")
 	q.Add("_pragma", "query_only(1)")
 	q.Set("mode", "ro")
+	if immutable {
+		q.Set("immutable", "1")
+	}
 	db, err := sql.Open("sqlite", "file:"+path+"?"+q.Encode())
 	if err != nil {
 		return nil, err

@@ -179,6 +179,14 @@ func (f *File) update(change func(map[string]string)) error {
 	return f.write(creds)
 }
 
+// Check reads the file once: an error when it is there and does not open with the key (or is damaged).
+func (f *File) Check() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, err := f.read()
+	return err
+}
+
 func (f *File) Put(_ context.Context, accountID, credential string) error {
 	return f.update(func(m map[string]string) { m[accountID] = credential })
 }
