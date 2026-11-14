@@ -42,6 +42,9 @@ type Options struct {
 	// WatchLimit is how long a provider's push stays open after a send; 0 is DefaultWatchLimit, negative turns
 	// watching off.
 	WatchLimit time.Duration
+	// OnClose runs once, at the end of the first Close, when nothing the club runs is left: a shell releases there
+	// what OpenSpace opened (a data directory). A later or concurrent Close returns after it.
+	OnClose func()
 }
 
 // DefaultWatchLimit is how long a provider's push stays open after a send, at most.
@@ -57,11 +60,12 @@ type Club struct {
 	ctx    context.Context
 	stop   context.CancelFunc
 
-	mu     sync.Mutex
-	spaces map[string]*Space
-	timers map[*time.Timer]struct{}
-	closed bool
-	wg     sync.WaitGroup
+	mu      sync.Mutex
+	spaces  map[string]*Space
+	timers  map[*time.Timer]struct{}
+	closed  bool
+	wg      sync.WaitGroup
+	onClose sync.Once
 }
 
 // New is a club.
@@ -175,7 +179,7 @@ func (c *Club) after(d time.Duration, f func()) {
 	c.timers[t] = struct{}{}
 }
 
-// Close stops polling, follow-ups and watches, and waits for those running.
+// Close stops polling, follow-ups and watches, waits for those running, then runs Options.OnClose.
 func (c *Club) Close() {
 	c.stop()
 	c.mu.Lock()
@@ -188,4 +192,9 @@ func (c *Club) Close() {
 	}
 	c.mu.Unlock()
 	c.wg.Wait()
+	c.onClose.Do(func() {
+		if c.opts.OnClose != nil {
+			c.opts.OnClose()
+		}
+	})
 }

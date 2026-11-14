@@ -20,7 +20,8 @@ import (
 const KeySize = 32
 
 // LoadKey reads the key file at path (64 hex digits), creating it with a fresh random key (mode 0600) when create
-// is set and it does not exist. A key file that others than its owner can read is refused.
+// is set and it does not exist. A key file that others than its owner can read is refused. A file of exactly 32
+// bytes is read as the raw key: the Persona shell wrote its club.key that way before it used this function.
 func LoadKey(path string, create bool) ([]byte, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) && create {
@@ -31,6 +32,9 @@ func LoadKey(path string, create bool) ([]byte, error) {
 	}
 	if err := ownerOnly(path); err != nil {
 		return nil, err
+	}
+	if len(raw) == KeySize {
+		return raw, nil
 	}
 	key, err := hex.DecodeString(strings.TrimSpace(string(raw)))
 	if err != nil || len(key) != KeySize {

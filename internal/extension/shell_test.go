@@ -3,6 +3,7 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 
 	pac "github.com/nwverse/personal-agent-club"
 	"github.com/nwverse/personal-agent-club/internal/core"
+	"github.com/nwverse/personal-agent-club/internal/datadir"
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider"
 	"github.com/nwverse/personal-agent-club/internal/provider/echo"
@@ -296,52 +298,81 @@ func TestReasonHidesTheSecret(t *testing.T) {
 	}
 }
 
-func TestEnsureKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), KeyFileName)
-	if err := EnsureKey(path); err != nil {
+func TestNewClubKeepsItsDataInTheDataDirectory(t *testing.T) {
+	ctx := context.Background()
+	data := t.TempDir()
+	t.Setenv("PERSONA_EXTENSION_DATA", data)
+	open := func() (*core.Club, *core.Space) {
+		t.Helper()
+		club, h, err := NewClub("0.0.0", discard())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.DataDir != data || h.KeyFile != filepath.Join(data, KeyFileName) || h.HTTP == nil {
+			t.Fatalf("host %+v", h)
+		}
+		for _, p := range []string{"cue", "grok_bot", "groq"} {
+			if _, ok := club.Registry().Get(p); !ok {
+				t.Fatalf("no %s provider", p)
+			}
+		}
+		club.Registry().Register(echo.New())
+		s, err := club.Space(ctx, core.DefaultSpace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return club, s
+	}
+	club, s := open()
+	a, err := s.AddAccount(ctx, protocol.AddAccountParams{Provider: echo.Name, Credential: demoCredential})
+	if err != nil {
 		t.Fatal(err)
 	}
-	fi, err := os.Stat(path)
-	if err != nil || fi.Size() != keySize || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("key file: %v %v", fi, err)
+	// a second owner is refused while the program runs
+	if _, err := datadir.Open(data, filepath.Join(data, KeyFileName)); !errors.Is(err, datadir.ErrInUse) {
+		t.Fatalf("a second owner: %v", err)
 	}
-	first, _ := os.ReadFile(path)
-	if err := os.Chmod(path, 0o644); err != nil {
+	club.Close()
+	for _, p := range []string{KeyFileName, "club.lock", "spaces/default/club.db", "spaces/default/credentials.enc"} {
+		fi, err := os.Stat(filepath.Join(data, p))
+		if err != nil || fi.Mode().Perm() != 0o600 {
+			t.Fatalf("%s: %v %v", p, fi, err)
+		}
+	}
+	if fi, _ := os.Stat(filepath.Join(data, "spaces", "default")); fi.Mode().Perm() != 0o700 {
+		t.Fatalf("space directory mode %v", fi.Mode())
+	}
+	raw, _ := os.ReadFile(filepath.Join(data, "spaces", "default", "credentials.enc"))
+	if strings.Contains(string(raw), demoCredential) {
+		t.Fatal("the credential is stored in clear")
+	}
+
+	// closing the club released the directory; the next start finds the account and its credential
+	club, s = open()
+	defer club.Close()
+	if got, err := s.Account(ctx, a.AccountID); err != nil || got.Provider != echo.Name {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if err := s.SyncAccount(ctx, a.AccountID); err != nil {
 		t.Fatal(err)
 	}
-	if err := EnsureKey(path); err != nil {
-		t.Fatal(err)
-	}
-	fi, _ = os.Stat(path)
-	second, _ := os.ReadFile(path)
-	if fi.Mode().Perm() != 0o600 || string(first) != string(second) {
-		t.Fatal("an existing key was not kept as it is, at 0600")
-	}
-	if err := os.WriteFile(path, []byte("short"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := EnsureKey(path); err == nil {
-		t.Fatal("a key of the wrong size was accepted")
+	if got, _ := s.Account(ctx, a.AccountID); got.Status != protocol.AccountActive || got.LastError != "" || got.LastSyncedAt == 0 {
+		t.Fatalf("a sync after the restart: %+v", got)
 	}
 }
 
-func TestNewClubPreparesTheDataDirectory(t *testing.T) {
-	data := t.TempDir()
-	t.Setenv("PERSONA_EXTENSION_DATA", data)
-	var seen Host
-	old := Configure
-	Configure = func(h Host, _ *core.Options) error { seen = h; return nil }
-	t.Cleanup(func() { Configure = old })
+func TestNewClubWithoutADataDirectoryKeepsItInMemory(t *testing.T) {
+	t.Setenv("PERSONA_EXTENSION_DATA", "")
 	club, h, err := NewClub("0.0.0", discard())
 	if err != nil {
 		t.Fatal(err)
 	}
-	club.Close()
-	if h.DataDir != data || seen.KeyFile != filepath.Join(data, KeyFileName) || seen.HTTP == nil {
-		t.Fatalf("host %+v", seen)
+	defer club.Close()
+	if h.DataDir != "" || h.KeyFile != "" {
+		t.Fatalf("%+v", h)
 	}
-	if fi, err := os.Stat(h.SpaceDir(core.DefaultSpace)); err != nil || fi.Mode().Perm() != 0o700 {
-		t.Fatalf("space directory: %v %v", fi, err)
+	if _, err := club.Space(context.Background(), core.DefaultSpace); err != nil {
+		t.Fatal(err)
 	}
 }
 

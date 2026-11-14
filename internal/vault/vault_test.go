@@ -107,4 +107,13 @@ func TestFileVault(t *testing.T) {
 	if _, err := LoadKey(filepath.Join(dir, "missing"), false); err == nil {
 		t.Fatal("a missing key was created")
 	}
+	// the raw 32 bytes the Persona shell's own key file once held
+	rawPath := filepath.Join(dir, "club.key")
+	_ = os.WriteFile(rawPath, key, 0o600)
+	if got, err := LoadKey(rawPath, true); err != nil || !bytes.Equal(got, key) {
+		t.Fatalf("a raw key: %v", err)
+	}
+	if again, _ := os.ReadFile(rawPath); !bytes.Equal(again, key) {
+		t.Fatal("a raw key file was rewritten")
+	}
 }

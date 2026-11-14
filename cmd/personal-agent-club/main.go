@@ -83,6 +83,8 @@ func runWith(args []string, d deps) int {
 			return 1
 		}
 		ext.Main(extension.Program(club, version))
+		// The program's end closes the club too (and with it the data directory); Close waits for that.
+		club.Close()
 		return 0
 	}
 	switch args[0] {
