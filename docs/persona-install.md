@@ -35,7 +35,14 @@ says otherwise):
 | `extensions/installed/personal-agent-club/<version>/` | The unpacked package; an upgrade keeps the current and the previous version |
 | `extensions/data/personal-agent-club/` | The extension's own data: `club.key` (the key its credential files are sealed with, mode 0600) and `spaces/default/` |
 
-Copy both before an upgrade, keeping modes (`cp -a` or `tar -p`); treat the copy of the data directory like a
+Copy both before an upgrade, keeping modes, for example from the state directory:
+
+```sh
+tar -C ~/.persona/extensions -cpzf personal-agent-club-backup.tgz \
+  installed/personal-agent-club data/personal-agent-club
+```
+
+Treat the copy of the data directory like a
 password store, since it holds the key next to what it protects. The hub also keeps the extension's settings and its
 record in its database; back that up as you usually back up the hub.
 
@@ -117,6 +124,36 @@ personad extension show personal-agent-club   # "sandbox": {"active": true, "egr
 - If the hub itself must go through a proxy to reach the internet, set `HTTPS_PROXY` for the hub; the egress proxy
   goes out through it and the extension needs nothing more.
 
+## Stopping just this extension
+
+```sh
+personad extension disable personal-agent-club   # its program stops; the hub and other extensions keep running
+personad extension enable personal-agent-club    # started again with the same settings and data
+```
+
+`disable` keeps the settings and the data directory; the `pac` source leaves the Agents page until `enable`. Work
+on the data directory while the program is stopped (an offline import, a restore) goes between the two. A hub
+restart starts the extension again by itself.
+
+## The data directory
+
+The hub gives the program `PERSONA_EXTENSION_DATA`, which is `<state>/extensions/data/personal-agent-club/`, where
+`<state>` is the hub's state directory (`~/.persona` of the user the hub runs as, or `PERSONA_HOME`). To see the path
+a running program actually has, on Linux:
+
+```sh
+pid=$(pgrep -f 'extensions/installed/personal-agent-club/.*/bin/personal-agent-club-' | head -1)
+tr '\0' '\n' </proc/$pid/environ | grep '^PERSONA_EXTENSION_DATA='
+```
+
+Print only that line: the same environment holds the program's proxy credential.
+
+Files put there by anything else (a restore, an import tool) must be owned by the user the hub runs as and be
+readable and writable by that user; `0600` files in `0700` directories are what the extension writes itself. The
+sandbox lets the program read and write everything under its data directory and nothing above it, and it does not
+change owners or modes: a file left owned by root, or another user, cannot be opened by the program. Run such tools
+as the hub's user while the extension is disabled, then enable it.
+
 ## Upgrade
 
 ```sh
@@ -124,8 +161,18 @@ personad extension upgrade personal-agent-club file:/path/to/personal-agent-club
 ```
 
 The version must be higher than the installed one. The hub stops the old program and starts the new one, keeping the
-settings; when the new one does not come up within 30 seconds it goes back to the old one by itself. An upgrade that
-asks for more (another host, another contribution place) shows what grew and asks again. No hub restart.
+settings and the data directory; when the new one does not come up within 30 seconds it goes back to the old one by
+itself. An upgrade that asks for more (another host, another contribution place) shows what grew and asks again. No
+hub restart.
+
+A package with the **same version** as the installed one cannot be upgraded to. To run its programs anyway, remove
+the installed one keeping its data, then install again; this drops the extension's settings (set `demo_echo` again
+if you used it), not its data directory:
+
+```sh
+personad extension uninstall personal-agent-club --keep-data
+personad extension install file:/path/to/personal-agent-club-<version>.tar.gz
+```
 
 ## Roll back or remove
 
