@@ -593,7 +593,7 @@ func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParam
 	if err := s.vault.Delete(ctx, p.AccountID); err != nil {
 		return err
 	}
-	if err := s.store.RemoveAccount(ctx, p.AccountID, p.DeleteData); err != nil {
+	if err := s.store.RemoveAccount(ctx, p.AccountID, p.DeleteData, s.now()); err != nil {
 		return err
 	}
 	s.notify(nil)

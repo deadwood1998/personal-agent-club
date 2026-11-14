@@ -11,9 +11,6 @@ import (
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 )
 
-// echoWindowMs is how far back a stored user message may be to count as the agent's echo of a send.
-const echoWindowMs = 60_000
-
 // Memory is a Store in memory.
 type Memory struct {
 	mu       sync.Mutex
@@ -21,12 +18,13 @@ type Memory struct {
 	sessions map[string]Session
 	messages map[string]map[string]Message // by session key, then external id
 	outbox   map[string]Outbox
+	settings map[string]string
 }
 
 // NewMemory is an empty in-memory store.
 func NewMemory() *Memory {
 	return &Memory{accounts: map[string]Account{}, sessions: map[string]Session{},
-		messages: map[string]map[string]Message{}, outbox: map[string]Outbox{}}
+		messages: map[string]map[string]Message{}, outbox: map[string]Outbox{}, settings: map[string]string{}}
 }
 
 var _ Store = (*Memory)(nil)
@@ -34,7 +32,12 @@ var _ Store = (*Memory)(nil)
 func (m *Memory) ListAccounts(context.Context) ([]Account, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := slices.Collect(maps.Values(m.accounts))
+	var out []Account
+	for _, a := range m.accounts {
+		if a.Status != AccountRemoved {
+			out = append(out, a)
+		}
+	}
 	slices.SortFunc(out, func(a, b Account) int {
 		return cmp.Or(cmp.Compare(a.CreatedAt, b.CreatedAt), strings.Compare(a.AccountID, b.AccountID))
 	})
@@ -45,7 +48,10 @@ func (m *Memory) Account(_ context.Context, id string) (Account, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	a, ok := m.accounts[id]
-	return a, ok, nil
+	if !ok || a.Status == AccountRemoved {
+		return Account{}, false, nil
+	}
+	return a, true, nil
 }
 
 func (m *Memory) InsertAccount(_ context.Context, a Account) error {
@@ -85,16 +91,19 @@ func (m *Memory) UpdateAccount(_ context.Context, id string, p AccountPatch, now
 	return nil
 }
 
-func (m *Memory) RemoveAccount(_ context.Context, id string, deleteData bool) error {
+func (m *Memory) RemoveAccount(_ context.Context, id string, deleteData bool, now int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.accounts[id]; !ok {
+	a, ok := m.accounts[id]
+	if !ok {
 		return ErrNotFound
 	}
-	delete(m.accounts, id)
 	if !deleteData {
+		a.Status, a.UpdatedAt = AccountRemoved, now
+		m.accounts[id] = a
 		return nil
 	}
+	delete(m.accounts, id)
 	for key, s := range m.sessions {
 		if s.AccountID == id {
 			delete(m.sessions, key)
@@ -118,18 +127,16 @@ func (m *Memory) UpsertSessions(_ context.Context, sessions []Session, now int64
 		if !ok {
 			s.ReadTimeMs = max(now, s.RankTimeMs)
 			s.UpdatedAt = now
-			s.Ref = maps.Clone(s.Ref)
+			s.Ref = cloneRef(s.Ref)
 			m.sessions[s.SessionKey] = s
 			changed++
 			continue
 		}
 		next := old
 		next.Title, next.Kind, next.ParentSessionKey, next.CanSend = s.Title, s.Kind, s.ParentSessionKey, s.CanSend
-		next.AvatarURL, next.Ref = s.AvatarURL, maps.Clone(s.Ref)
+		next.AvatarURL, next.Ref = s.AvatarURL, cloneRef(s.Ref)
 		next.RankTimeMs = max(old.RankTimeMs, s.RankTimeMs)
-		if next.Title != old.Title || next.Kind != old.Kind || next.ParentSessionKey != old.ParentSessionKey ||
-			next.CanSend != old.CanSend || next.AvatarURL != old.AvatarURL || !maps.Equal(next.Ref, old.Ref) ||
-			next.RankTimeMs != old.RankTimeMs {
+		if sessionChanged(old, next) {
 			next.UpdatedAt = now
 			m.sessions[s.SessionKey] = next
 			changed++
@@ -138,46 +145,58 @@ func (m *Memory) UpsertSessions(_ context.Context, sessions []Session, now int64
 	return changed, nil
 }
 
+func cloneRef(r map[string]string) map[string]string {
+	if r == nil {
+		return map[string]string{}
+	}
+	return maps.Clone(r)
+}
+
+func sessionChanged(old, next Session) bool {
+	return next.Title != old.Title || next.Kind != old.Kind || next.ParentSessionKey != old.ParentSessionKey ||
+		next.CanSend != old.CanSend || next.AvatarURL != old.AvatarURL || !maps.Equal(next.Ref, old.Ref) ||
+		next.RankTimeMs != old.RankTimeMs
+}
+
 func (m *Memory) UpsertMessages(_ context.Context, key string, messages []Message, now int64) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	byID := m.messages[key]
-	if byID == nil {
-		byID = map[string]Message{}
-		m.messages[key] = byID
-	}
 	changed := 0
 	for _, msg := range messages {
-		msg.SessionKey = key
-		old, ok := byID[msg.ExternalID]
-		if msg.CreateTimeMs == 0 {
-			msg.CreateTimeMs = now
-			if ok {
-				msg.CreateTimeMs = old.CreateTimeMs
-			}
+		if m.putMessage(key, msg, now) {
+			changed++
 		}
-		if ok && sameMessage(old, msg) {
-			continue
-		}
-		byID[msg.ExternalID] = msg
-		changed++
 	}
 	m.refresh(key, now)
 	return changed, nil
 }
 
-func sameMessage(a, b Message) bool {
-	if a.Role != b.Role || a.CreateTimeMs != b.CreateTimeMs || a.Position != b.Position || len(a.Blocks) != len(b.Blocks) {
-		return false
+// putMessage upserts one message. m.mu is held.
+func (m *Memory) putMessage(key string, msg Message, now int64) bool {
+	byID := m.messages[key]
+	if byID == nil {
+		byID = map[string]Message{}
+		m.messages[key] = byID
 	}
-	for i := range a.Blocks {
-		x, _ := a.Blocks[i].MarshalJSON()
-		y, _ := b.Blocks[i].MarshalJSON()
-		if string(x) != string(y) {
-			return false
+	msg.SessionKey = key
+	msg.Blocks = slices.Clone(msg.Blocks)
+	old, ok := byID[msg.ExternalID]
+	if msg.CreateTimeMs == 0 {
+		msg.CreateTimeMs = now
+		if ok {
+			msg.CreateTimeMs = old.CreateTimeMs
 		}
 	}
+	if ok && sameMessage(old, msg) {
+		return false
+	}
+	byID[msg.ExternalID] = msg
 	return true
+}
+
+func sameMessage(a, b Message) bool {
+	return a.Role == b.Role && a.CreateTimeMs == b.CreateTimeMs && a.Position == b.Position &&
+		blocksJSON(a.Blocks) == blocksJSON(b.Blocks)
 }
 
 // refresh recomputes a session's rank, preview and unread count. m.mu is held.
@@ -193,7 +212,7 @@ func (m *Memory) refresh(key string, now int64) {
 			lastUser = max(lastUser, msg.CreateTimeMs)
 		}
 		if (msg.Role == protocol.RoleUser || msg.Role == protocol.RoleAssistant) && msg.Text() != "" {
-			if latest == nil || compareMessages(msg, *latest) > 0 {
+			if latest == nil || comparePreview(msg, *latest) > 0 {
 				x := msg
 				latest = &x
 			}
@@ -224,17 +243,41 @@ func compareMessages(a, b Message) int {
 		strings.Compare(a.ExternalID, b.ExternalID))
 }
 
+// comparePreview orders preview candidates as the SQLite store does: time, position, then external id.
+func comparePreview(a, b Message) int { return compareMessages(a, b) }
+
+func (m *Memory) listedSession(s Session) bool {
+	a, ok := m.accounts[s.AccountID]
+	return ok && listed(a.Status)
+}
+
 func (m *Memory) Session(_ context.Context, key string) (Session, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[key]
-	if !ok {
-		return Session{}, false, nil
-	}
-	if _, listed := m.accounts[s.AccountID]; !listed {
+	if !ok || !m.listedSession(s) {
 		return Session{}, false, nil
 	}
 	return s, true, nil
+}
+
+// compareFeed is the feed order: pinned first (most recently pinned first), then rank time, then key, newest
+// first.
+func compareFeed(a, b Session) int {
+	pinned := func(s Session) int {
+		if s.OnTopRankTimeMs != 0 {
+			return 1
+		}
+		return 0
+	}
+	rank := func(s Session) int64 {
+		if s.OnTopRankTimeMs == 0 {
+			return s.RankTimeMs
+		}
+		return 0
+	}
+	return cmp.Or(cmp.Compare(pinned(b), pinned(a)), cmp.Compare(b.OnTopRankTimeMs, a.OnTopRankTimeMs),
+		cmp.Compare(rank(b), rank(a)), strings.Compare(b.SessionKey, a.SessionKey))
 }
 
 func (m *Memory) Sessions(_ context.Context, limit int) ([]Session, error) {
@@ -242,13 +285,11 @@ func (m *Memory) Sessions(_ context.Context, limit int) ([]Session, error) {
 	defer m.mu.Unlock()
 	var out []Session
 	for _, s := range m.sessions {
-		if _, listed := m.accounts[s.AccountID]; listed {
+		if m.listedSession(s) && !s.IsHidden {
 			out = append(out, s)
 		}
 	}
-	slices.SortFunc(out, func(a, b Session) int {
-		return cmp.Or(cmp.Compare(b.RankTimeMs, a.RankTimeMs), strings.Compare(a.SessionKey, b.SessionKey))
-	})
+	slices.SortFunc(out, compareFeed)
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
@@ -264,8 +305,33 @@ func (m *Memory) AccountSessions(_ context.Context, id string) ([]Session, error
 			out = append(out, s)
 		}
 	}
-	slices.SortFunc(out, func(a, b Session) int { return strings.Compare(a.SessionKey, b.SessionKey) })
+	slices.SortFunc(out, func(a, b Session) int {
+		return cmp.Or(cmp.Compare(b.RankTimeMs, a.RankTimeMs), strings.Compare(b.SessionKey, a.SessionKey))
+	})
 	return out, nil
+}
+
+func (m *Memory) ActiveSessionKeys(_ context.Context, id string, since int64) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	active := map[string]bool{}
+	for key, s := range m.sessions {
+		if s.AccountID != id {
+			continue
+		}
+		for _, msg := range m.messages[key] {
+			if msg.CreateTimeMs >= since {
+				active[key] = true
+				break
+			}
+		}
+	}
+	for _, o := range m.outbox {
+		if s, ok := m.sessions[o.SessionKey]; ok && s.AccountID == id && o.CreatedAt >= since {
+			active[o.SessionKey] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(active)), nil
 }
 
 func (m *Memory) Messages(_ context.Context, key string, limit int, before *Cursor) ([]Message, bool, error) {
@@ -301,13 +367,30 @@ func (m *Memory) MarkRead(_ context.Context, key string, now int64) error {
 	return nil
 }
 
+func (m *Memory) Counts(_ context.Context, id string) (Counts, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var c Counts
+	for key, s := range m.sessions {
+		if s.AccountID != id {
+			continue
+		}
+		c.Sessions++
+		for _, msg := range m.messages[key] {
+			c.Messages++
+			c.LatestMessageMs = max(c.LatestMessageMs, msg.CreateTimeMs)
+		}
+	}
+	return c, nil
+}
+
 func (m *Memory) EnqueueOutbox(_ context.Context, o Outbox) (Outbox, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if old, ok := m.outbox[o.ClientID]; ok {
 		return old, false, nil
 	}
-	o.Status = protocol.LocalPending
+	o.Status, o.LastError, o.AttemptCount = protocol.LocalPending, "", 0
 	o.UpdatedAt = o.CreatedAt
 	m.outbox[o.ClientID] = o
 	return o, true, nil
@@ -353,6 +436,17 @@ func (m *Memory) CancelOutbox(_ context.Context, clientID, key string, now int64
 	}
 	o.Status, o.LastError, o.UpdatedAt = protocol.LocalFailed, "CANCELLED", now
 	m.outbox[clientID] = o
+	return true, nil
+}
+
+func (m *Memory) DismissOutbox(_ context.Context, clientID, key string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	o, ok := m.outbox[clientID]
+	if !ok || o.SessionKey != key || o.Status != protocol.LocalFailed {
+		return false, nil
+	}
+	delete(m.outbox, clientID)
 	return true, nil
 }
 
@@ -407,7 +501,7 @@ func (m *Memory) LocalMessages(_ context.Context, key string, since int64) ([]Ou
 		echoed := false
 		for _, msg := range m.messages[key] {
 			if msg.Role == protocol.RoleUser && msg.CreateTimeMs >= o.CreatedAt-echoWindowMs &&
-				strings.TrimSpace(msg.Text()) == strings.TrimSpace(o.Text) {
+				echoText(msg.Text()) == echoText(o.Text) {
 				echoed = true
 				break
 			}
@@ -427,36 +521,91 @@ func sortOutbox(out []Outbox) {
 }
 
 func (m *Memory) Search(_ context.Context, q string, limit int) ([]protocol.SearchHit, error) {
-	q = strings.ToLower(strings.TrimSpace(q))
-	if q == "" {
+	query := parseQuery(q)
+	if query.text == "" {
 		return []protocol.SearchHit{}, nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	hits := []protocol.SearchHit{}
-	for key, byID := range m.messages {
-		s, ok := m.sessions[key]
-		if !ok {
-			continue
-		}
-		if _, listed := m.accounts[s.AccountID]; !listed {
-			continue
-		}
+	var all []Message
+	for _, byID := range m.messages {
 		for _, msg := range byID {
-			text := msg.Text()
-			if !strings.Contains(strings.ToLower(text), q) {
-				continue
-			}
-			hits = append(hits, protocol.SearchHit{SessionKey: key, ExternalID: msg.ExternalID, Text: text,
-				Role: msg.Role, CreateTimeMs: msg.CreateTimeMs, Title: s.Title, Provider: s.Provider})
+			all = append(all, msg)
 		}
 	}
-	slices.SortFunc(hits, func(a, b protocol.SearchHit) int {
+	slices.SortFunc(all, func(a, b Message) int {
 		return cmp.Or(cmp.Compare(b.CreateTimeMs, a.CreateTimeMs), strings.Compare(a.SessionKey, b.SessionKey),
 			strings.Compare(a.ExternalID, b.ExternalID))
 	})
-	if limit > 0 && len(hits) > limit {
-		hits = hits[:limit]
+	hit := func(msg Message) (protocol.SearchHit, bool) {
+		s, ok := m.sessions[msg.SessionKey]
+		if !ok || !m.listedSession(s) {
+			return protocol.SearchHit{}, false
+		}
+		return protocol.SearchHit{SessionKey: msg.SessionKey, ExternalID: msg.ExternalID, Text: msg.Text(), Role: msg.Role,
+			CreateTimeMs: msg.CreateTimeMs, Title: s.Title, Provider: s.Provider}, true
 	}
+	hits := []protocol.SearchHit{}
+	for _, msg := range all {
+		if len(hits) == limit {
+			break
+		}
+		if query.matches(msg.Text()) {
+			if h, ok := hit(msg); ok {
+				hits = append(hits, h)
+			}
+		}
+	}
+	for _, msg := range all[:min(len(all), substringScan)] {
+		if len(hits) >= limit {
+			break
+		}
+		if query.matches(msg.Text()) || !query.containsText(msg.Text()) {
+			continue
+		}
+		if h, ok := hit(msg); ok {
+			hits = append(hits, h)
+		}
+	}
+	sortHits(hits)
 	return hits, nil
+}
+
+func sortHits(hits []protocol.SearchHit) {
+	slices.SortStableFunc(hits, func(a, b protocol.SearchHit) int { return cmp.Compare(b.CreateTimeMs, a.CreateTimeMs) })
+}
+
+func (m *Memory) Setting(_ context.Context, key string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.settings[key]
+	return v, ok, nil
+}
+
+func (m *Memory) PutSetting(_ context.Context, key, value string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.settings[key] = value
+	return nil
+}
+
+func (m *Memory) Import(_ context.Context, rows Import) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, a := range rows.Accounts {
+		m.accounts[a.AccountID] = a
+	}
+	for _, s := range rows.Sessions {
+		s.Ref = cloneRef(s.Ref)
+		m.sessions[s.SessionKey] = s
+	}
+	for _, msg := range rows.Messages {
+		m.putMessage(msg.SessionKey, msg, msg.CreateTimeMs)
+	}
+	for _, o := range rows.Outbox {
+		if _, taken := m.outbox[o.ClientID]; !taken {
+			m.outbox[o.ClientID] = o
+		}
+	}
+	return nil
 }
