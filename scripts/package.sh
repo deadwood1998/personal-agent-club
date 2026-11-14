@@ -1,5 +1,7 @@
 #!/bin/bash
-# Pack the Persona extension: dist/personal-agent-club-<version>.tar.gz and its .sha256.
+# Pack the Persona extension, one command, from any directory: dist/personal-agent-club-<version>.tar.gz and its
+# .sha256, plus the same archive under the fixed name dist/personal-agent-club.tar.gz (and .sha256) for scripts that
+# should not need to know the version. Running it again replaces both.
 #
 # The archive holds one top-level directory with the manifest (as persona-extension.json, and as persona-plugin.json
 # for hubs from before the rename to extensions) and the program for each platform the manifest names, built with
@@ -17,7 +19,7 @@ if [ -n "${VERSION:-}" ]; then
 fi
 
 out=dist/$id
-rm -rf "$out" "dist/$id-$version.tar.gz" "dist/$id-$version.tar.gz.sha256"
+rm -rf "$out" "dist/$id-$version.tar.gz" "dist/$id-$version.tar.gz.sha256" "dist/$id.tar.gz" "dist/$id.tar.gz.sha256"
 mkdir -p "$out/bin"
 cp persona-extension.json "$out/persona-extension.json"
 cp persona-extension.json "$out/persona-plugin.json"
@@ -50,4 +52,11 @@ if command -v sha256sum >/dev/null; then
 else
   (cd dist && shasum -a 256 "$id-$version.tar.gz" | tee "$id-$version.tar.gz.sha256")
 fi
+cp "dist/$id-$version.tar.gz" "dist/$id.tar.gz"
+if command -v sha256sum >/dev/null; then
+  (cd dist && sha256sum "$id.tar.gz" >"$id.tar.gz.sha256")
+else
+  (cd dist && shasum -a 256 "$id.tar.gz" >"$id.tar.gz.sha256")
+fi
 tar -tzvf "dist/$id-$version.tar.gz"
+echo "package: $PWD/dist/$id-$version.tar.gz (also $PWD/dist/$id.tar.gz)"
