@@ -19,8 +19,8 @@ reaches three providers through their APIs: Cue (Manus API v2), Grok Bot (its de
 (OpenAI-compatible). An exported space of the Lark gateway's agent bridge can be imported with its ids, and the
 accounts can be listed read-only beside a running serve. The browser-based providers (Muse, Dots, Claude Duet) are not
 in this version. The provider adapters are built from documentation and recorded fixtures and still need calibrating
-against real traffic (`internal/provider/testdata`). The Persona shell still keeps everything in memory. See the
-roadmap below.
+against real traffic (`internal/provider/testdata`). The Persona extension serves the same core from its own data
+directory, with an accounts page and the assistant's tools. See the roadmap below.
 
 License: not decided yet. Until a license is added, no rights beyond viewing the source are granted.
 
@@ -135,7 +135,10 @@ Grok Bot and Groq), the Accounts page (`ui` `accounts`) and the connector `club`
 tools, `activation_events: on_startup`, and network access to the three providers' API hosts only. `make package`
 builds `dist/personal-agent-club-<version>.tar.gz` (manifest and the four programs), `scripts/persona-test.sh` holds it
 to the hub's own checks, and [docs/persona-install.md](docs/persona-install.md) installs it on a hub. The configuration
-switch `demo_echo` adds the echo provider. In this version the extension still keeps its spaces in memory.
+switch `demo_echo` adds the echo provider. The extension keeps its one space (`default`) in the data directory the hub
+gives it, laid out as serve's with the key in `club.key`, so `import` and `accounts` work on it too; its providers go
+out through the HTTP client that takes the hub's egress proxy. Without a data directory (run by hand) it keeps
+everything in memory.
 
 ## Providers
 
@@ -224,6 +227,7 @@ Rules the core keeps:
 | Path | What |
 | --- | --- |
 | `cmd/personal-agent-club` | the program: extension mode, `serve`, `import`, `accounts`, `version`; the whole-program tests |
+| `scripts` | `package.sh` (the Persona package, `make package`) and `persona-test.sh` (the hub's own checks) |
 | `internal/protocol` | wire types and method names, pinned by golden JSON |
 | `internal/provider` | the provider adapter interface, optional capabilities, the registry; `cue/`, `grokbot/`, `groq/` the API providers, `echo/` the demo one, `web/` their shared HTTP client, `providertest/` a fake upstream |
 | `internal/providers` | the registry both shells build: the API providers on one HTTP client and its proxy |
@@ -232,7 +236,7 @@ Rules the core keeps:
 | `internal/datadir` | the data directory: lock, key, spaces, read-only access |
 | `internal/core` | spaces, accounts, sync, outbox, read state, search, events, quota, import, logins, assistant control |
 | `internal/serve` | the HTTP shell and its token levels |
-| `internal/extension` | the Persona extension shell |
+| `internal/extension` | the Persona extension shell: the agent source, the accounts page, the assistant's `club_agent_*` tools, its data directory |
 | `internal/conformance` | one protocol test suite, run against both shells |
 
 ## Development
@@ -240,6 +244,8 @@ Rules the core keeps:
 ```sh
 make check    # gofmt, go vet, go test -race
 make dist     # the four platform binaries
+make package # the Persona extension package under dist/
+scripts/persona-test.sh   # the hub's own checks (needs personad)
 ```
 
 ## Roadmap
@@ -250,7 +256,7 @@ make dist     # the four platform binaries
    providers still need calibrating against real traffic.)* Interrupt and new sessions wait for a provider that can.
 3. The Lark gateway gains a club backend behind an optional setting, off by default.
 4. Migration of paired accounts into club (`import`, with verification), then rollback and export.
-5. The Persona extension: agent source and account page on disk, then the assistant's `club_agent_*` tools, then
+5. The Persona extension: agent source, accounts page and the assistant's `club_agent_*` tools on disk *(done)*, then
    gateway and launcher quota sources.
 6. Browser-based providers, after checking that a browser can run in the extension sandbox.
 7. Whether club becomes the Lark gateway's default backend is decided later.

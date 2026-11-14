@@ -33,7 +33,7 @@ says otherwise):
 | Directory | What it holds |
 | --- | --- |
 | `extensions/installed/personal-agent-club/<version>/` | The unpacked package; an upgrade keeps the current and the previous version |
-| `extensions/data/personal-agent-club/` | The extension's own data: `club.key` (the key its credential files are sealed with, mode 0600) and `spaces/default/` |
+| `extensions/data/personal-agent-club/` | The extension's own data (below): `club.key`, `club.lock` and `spaces/default/` with `club.db` and `credentials.enc` |
 
 Copy both before an upgrade, keeping modes, for example from the state directory:
 
@@ -46,9 +46,9 @@ Treat the copy of the data directory like a
 password store, since it holds the key next to what it protects. The hub also keeps the extension's settings and its
 record in its database; back that up as you usually back up the hub.
 
-> This version keeps accounts, sessions and messages **in memory**: they are gone whenever the extension restarts
-> (an upgrade, a settings change, a hub restart). The data directory and key file are already laid out for the
-> persistent store that comes next. Pair only test accounts with this version.
+Accounts, sessions, messages, read state and the outbox are kept on disk in the data directory and survive restarts,
+upgrades and settings changes; the credentials are kept there encrypted. Quota readings are kept in memory only: after
+a restart nothing is shown until a provider's next answer.
 
 ## Install
 
@@ -138,8 +138,24 @@ restart starts the extension again by itself.
 ## The data directory
 
 The hub gives the program `PERSONA_EXTENSION_DATA`, which is `<state>/extensions/data/personal-agent-club/`, where
-`<state>` is the hub's state directory (`~/.persona` of the user the hub runs as, or `PERSONA_HOME`). To see the path
-a running program actually has, on Linux:
+`<state>` is the hub's state directory (`~/.persona` of the user the hub runs as, or `PERSONA_HOME`). The program keeps
+there:
+
+| Path | What |
+| --- | --- |
+| `club.key` | the key the credential files are sealed with (AES-256-GCM), 0600; created at the first start and never rewritten |
+| `club.lock` | held while the program runs: one process owns the directory at a time |
+| `spaces/default/club.db` | the store of the one space this shell serves: SQLite (with its `-wal` and `-shm` files while it runs) |
+| `spaces/default/credentials.enc` | that space's credentials, sealed with `club.key` |
+
+This is the data directory layout `personal-agent-club serve` uses, with the key under the name `club.key`, so the
+command's tools work on it while the extension is disabled: `personal-agent-club import -data <dir> -key-file
+<dir>/club.key BUNDLE.json` imports a space exported from the Lark gateway ([import-bundle.md](import-bundle.md)), and
+`personal-agent-club accounts -data <dir>` lists the accounts read-only (that one also works while the extension
+runs). An import while the extension runs is refused (the lock), as is a second copy of the program. A key file that
+does not open `credentials.enc` stops the program at start, and nothing is overwritten: keep `club.key` with the rest.
+
+To see the path a running program actually has, on Linux:
 
 ```sh
 pid=$(pgrep -f 'extensions/installed/personal-agent-club/.*/bin/personal-agent-club-' | head -1)
