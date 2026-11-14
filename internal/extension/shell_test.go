@@ -3,6 +3,7 @@ package extension
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -375,5 +377,144 @@ func TestHTTPClientUsesTheHubProxy(t *testing.T) {
 		}
 	default:
 		t.Fatal("the request did not go through the proxy")
+	}
+}
+
+// fakeGrok is a grok_bot provider whose sign-in a test steers: each poll takes the next answer ("" pending, a
+// credential, or an error).
+type fakeGrok struct {
+	mu      sync.Mutex
+	polls   []any
+	started int
+}
+
+const grokCredential = "fixture-grok-signin-token-0001"
+
+func (f *fakeGrok) Name() string       { return grokBot }
+func (f *fakeGrok) Connection() string { return protocol.ConnectionServer }
+func (f *fakeGrok) Verify(context.Context, string) (provider.RemoteAccount, error) {
+	return provider.RemoteAccount{ExternalAccountID: "grok-remote-1", DisplayName: "Grok Bot"}, nil
+}
+func (f *fakeGrok) ListSessions(context.Context, string) ([]provider.RemoteSession, error) {
+	return []provider.RemoteSession{{ExternalID: "bot/", Title: "Grok 秘书", CanSend: true}}, nil
+}
+func (f *fakeGrok) ListMessages(context.Context, string, provider.SessionRef, provider.ListOptions) (provider.RemotePage, error) {
+	return provider.RemotePage{}, nil
+}
+func (f *fakeGrok) Send(context.Context, string, provider.SessionRef, provider.Outgoing, provider.SendContext) (provider.SendResult, error) {
+	return provider.SendResult{Status: provider.Sent}, nil
+}
+func (f *fakeGrok) StartLogin() (provider.LoginFlow, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.started++
+	return provider.LoginFlow{URL: fmt.Sprintf("https://login.example.com/approve?n=%d", f.started)}, nil
+}
+func (f *fakeGrok) PollLogin(context.Context, provider.LoginFlow) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.polls) == 0 {
+		return "", nil
+	}
+	next := f.polls[0]
+	f.polls = f.polls[1:]
+	if err, ok := next.(error); ok {
+		return "", err
+	}
+	return next.(string), nil
+}
+
+func (f *fakeGrok) answer(polls ...any) {
+	f.mu.Lock()
+	f.polls = polls
+	f.mu.Unlock()
+}
+
+func TestGrokBotSignIn(t *testing.T) {
+	grok := &fakeGrok{}
+	club := core.New(core.Options{Registry: provider.NewRegistry(grok), FollowUps: []time.Duration{}, WatchLimit: -1})
+	h := exttest.Start(t, pac.Manifest, exttest.Serve(t, Program(club, pac.Version())), json.RawMessage(`{}`))
+	ctx := context.Background()
+	noToken := func(v *wire.View) {
+		t.Helper()
+		if strings.Contains(text(v), grokCredential) {
+			t.Fatalf("a view carries the token: %s", text(v))
+		}
+	}
+
+	// start: the approval page opens, the page polls and stays pending
+	res := act(t, h, pageState{Page: pageGrok}, actGrokStart, nil)
+	if res.OpenURL != "https://login.example.com/approve?n=1" || !strings.Contains(text(res.View), "打开授权页") {
+		t.Fatalf("start: %+v %s", res, text(res.View))
+	}
+	var st pageState
+	if err := json.Unmarshal([]byte(res.View.State), &st); err != nil || st.Login == "" || st.LoginURL != res.OpenURL {
+		t.Fatalf("state %q %v", res.View.State, err)
+	}
+	if v := render(t, h, st); !strings.Contains(text(v), "立即检查") || v.RefreshAfter != 30 {
+		t.Fatalf("pending: %s", text(v))
+	}
+
+	// two sign-ins may wait at once, a third is refused with words for it
+	second := act(t, h, pageState{Page: pageGrok}, actGrokStart, nil)
+	if second.OpenURL == "" {
+		t.Fatalf("a second sign-in: %+v", second)
+	}
+	if third := act(t, h, pageState{Page: pageGrok}, actGrokStart, nil); third.OpenURL != "" || !strings.Contains(third.Toast, "两个登录") {
+		t.Fatalf("a third sign-in: %+v", third)
+	}
+	var st2 pageState
+	_ = json.Unmarshal([]byte(second.View.State), &st2)
+	if res := act(t, h, st2, actGrokStop, nil); !strings.Contains(res.Toast, "已取消") {
+		t.Fatalf("cancel: %+v", res)
+	}
+	if v := render(t, h, st2); !strings.Contains(text(v), "已过期") {
+		t.Fatalf("a canceled sign-in: %s", text(v))
+	}
+
+	// a provider hiccup keeps the sign-in; approval pairs the account, and the token is shown nowhere
+	grok.answer(&provider.Error{Code: "NETWORK_ERROR", Retryable: true}, grokCredential)
+	if v := render(t, h, st); !strings.Contains(text(v), "NETWORK_ERROR") || !strings.Contains(text(v), "立即检查") {
+		t.Fatalf("a retryable failure: %s", text(v))
+	}
+	v := render(t, h, st)
+	noToken(v)
+	if !strings.Contains(text(v), "已登录并配对") || !strings.Contains(text(v), "开始登录") {
+		t.Fatalf("done: %s", text(v))
+	}
+	space, _ := club.Space(ctx, core.DefaultSpace)
+	status, _ := space.Status(ctx)
+	if len(status.Accounts) != 1 || status.Accounts[0].Provider != grokBot {
+		t.Fatalf("%+v", status.Accounts)
+	}
+	id := status.Accounts[0].AccountID
+	// the finished sign-in is gone: polling it again says so
+	if v := render(t, h, st); !strings.Contains(text(v), "已过期") {
+		t.Fatalf("a finished sign-in again: %s", text(v))
+	}
+
+	// signing the account in again replaces its credential; a refusal ends the sign-in
+	page := render(t, h, pageState{Page: pageAccount, Account: id})
+	if !strings.Contains(text(page), "重新登录") {
+		t.Fatalf("no sign-in-again on a Grok Bot account: %s", text(page))
+	}
+	again := act(t, h, pageState{Page: pageGrok, Account: id}, actGrokStart, nil)
+	var sa pageState
+	_ = json.Unmarshal([]byte(again.View.State), &sa)
+	if sa.Account != id || sa.Login == "" {
+		t.Fatalf("%+v", sa)
+	}
+	grok.answer(&provider.Error{Code: "LOGIN_REFUSED", HTTPStatus: 403})
+	if v := render(t, h, sa); !strings.Contains(text(v), "LOGIN_REFUSED") || !strings.Contains(text(v), "开始登录") {
+		t.Fatalf("a refused sign-in: %s", text(v))
+	}
+	again = act(t, h, pageState{Page: pageGrok, Account: id}, actGrokStart, nil)
+	_ = json.Unmarshal([]byte(again.View.State), &sa)
+	grok.answer("fixture-grok-signin-token-0002")
+	if v := render(t, h, sa); !strings.Contains(text(v), "已重新登录") {
+		t.Fatalf("signed in again: %s", text(v))
+	}
+	if status, _ := space.Status(ctx); len(status.Accounts) != 1 {
+		t.Fatalf("signing in again paired another account: %+v", status.Accounts)
 	}
 }
