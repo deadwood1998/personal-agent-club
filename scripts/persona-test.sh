@@ -10,7 +10,8 @@ cd "$(dirname "$0")/.."
 personad=${PERSONAD:-personad}
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
-git ls-files -z --cached --others --exclude-standard | (mkdir -p "$scratch/src" && xargs -0 -I{} rsync -R "{}" "$scratch/src/")
+mkdir -p "$scratch/src"
+git ls-files -z --cached --others --exclude-standard | tar -c --null -T - | tar -x -C "$scratch/src"
 cp persona-extension.json "$scratch/src/cmd/personal-agent-club/"
 mkdir -p "$scratch/tmp" "$scratch/home"
 # A home and temporary directory of its own: the check writes its scratch data there, and reads nothing of a hub.
