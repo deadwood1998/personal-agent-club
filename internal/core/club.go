@@ -33,12 +33,26 @@ type Options struct {
 	FollowUps []time.Duration
 	// Log receives operational messages (never credentials or message text); nil discards them.
 	Log *slog.Logger
+	// PollInterval is how often every open space's accounts are synced; 0 turns polling off (sync then happens on
+	// pairing, on club.accounts.sync and after sends).
+	PollInterval time.Duration
+	// WatchLimit is how long a provider's push stays open after a send; 0 is DefaultWatchLimit, negative turns
+	// watching off.
+	WatchLimit time.Duration
 }
+
+// DefaultWatchLimit is how long a provider's push stays open after a send, at most.
+const DefaultWatchLimit = 90 * time.Second
+
+// MinPollInterval is the shortest poll interval a shell should configure.
+const MinPollInterval = 15 * time.Second
 
 // Club is one club: its spaces and their events.
 type Club struct {
 	opts   Options
 	events broker
+	ctx    context.Context
+	stop   context.CancelFunc
 
 	mu     sync.Mutex
 	spaces map[string]*Space
@@ -64,7 +78,11 @@ func New(opts Options) *Club {
 	if opts.Log == nil {
 		opts.Log = slog.New(slog.DiscardHandler)
 	}
-	return &Club{opts: opts, spaces: map[string]*Space{}, timers: map[*time.Timer]struct{}{}}
+	if opts.WatchLimit == 0 {
+		opts.WatchLimit = DefaultWatchLimit
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	return &Club{opts: opts, ctx: ctx, stop: stop, spaces: map[string]*Space{}, timers: map[*time.Timer]struct{}{}}
 }
 
 // Registry is the club's providers.
@@ -98,13 +116,30 @@ func (c *Club) Space(ctx context.Context, name string) (*Space, error) {
 		c.mu.Unlock()
 		return nil, fmt.Errorf("open space %s: %w", name, err)
 	}
-	s := &Space{name: name, club: c, store: st, vault: v}
+	s := newSpace(name, c, st, v)
 	c.spaces[name] = s
 	c.mu.Unlock()
 	if err := s.recover(ctx); err != nil {
 		c.opts.Log.Warn("outbox recovery failed", "space", name, "err", err)
 	}
+	if c.opts.PollInterval > 0 {
+		c.goTracked(func() { s.poll(c.ctx, c.opts.PollInterval) })
+	}
 	return s, nil
+}
+
+// goTracked runs f in the background; Close waits for it. f must return once the club's context ends.
+func (c *Club) goTracked(f func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		f()
+	}()
 }
 
 // Subscribe receives a space's change events ("" for every space).
@@ -135,8 +170,9 @@ func (c *Club) after(d time.Duration, f func()) {
 	c.timers[t] = struct{}{}
 }
 
-// Close stops follow-ups and waits for those running.
+// Close stops polling, follow-ups and watches, and waits for those running.
 func (c *Club) Close() {
+	c.stop()
 	c.mu.Lock()
 	c.closed = true
 	for t := range c.timers {

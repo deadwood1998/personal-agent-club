@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf16"
 
@@ -20,13 +21,15 @@ const (
 	messagePage       = 50
 	maxMessagePage    = 100
 	sessionsListed    = 500
-	searchLimit       = 50
+	searchLimit       = 20
 	maxQuery          = 200
+	previewChars      = 200
 	localEchoWindowMs = 10 * 60_000
 	historyMessages   = 40
 	sendTimeout       = 2 * time.Minute
 	minCredential     = 8
 	maxCredential     = 8192
+	maxDisplayName    = 80
 )
 
 // Space is one isolated set of accounts, sessions and credentials (spaces/<space>).
@@ -35,6 +38,47 @@ type Space struct {
 	club  *Club
 	store store.Store
 	vault vault.Vault
+
+	mu         sync.Mutex
+	syncing    map[string]*flight[struct{}]
+	refreshing map[string]*flight[string]
+	fetchedAt  map[string]int64
+	watching   map[string]context.CancelFunc
+	live       map[string]*liveEntry
+	logins     map[string]*login
+	quota      map[string]*quotaState
+}
+
+func newSpace(name string, c *Club, st store.Store, v vault.Vault) *Space {
+	return &Space{name: name, club: c, store: st, vault: v, syncing: map[string]*flight[struct{}]{},
+		refreshing: map[string]*flight[string]{}, fetchedAt: map[string]int64{}, watching: map[string]context.CancelFunc{},
+		live: map[string]*liveEntry{}, logins: map[string]*login{}, quota: map[string]*quotaState{}}
+}
+
+// flight is one call others may join.
+type flight[T any] struct {
+	done chan struct{}
+	val  T
+	err  error
+}
+
+// join runs f once per key at a time: a second caller waits for the running one and gets its answer.
+func join[T any](mu *sync.Mutex, m map[string]*flight[T], key string, f func() (T, error)) (T, error) {
+	mu.Lock()
+	if running := m[key]; running != nil {
+		mu.Unlock()
+		<-running.done
+		return running.val, running.err
+	}
+	fl := &flight[T]{done: make(chan struct{})}
+	m[key] = fl
+	mu.Unlock()
+	fl.val, fl.err = f()
+	mu.Lock()
+	delete(m, key)
+	mu.Unlock()
+	close(fl.done)
+	return fl.val, fl.err
 }
 
 // Name is the space's name.
@@ -46,6 +90,25 @@ func (s *Space) Store() store.Store { return s.store }
 func (s *Space) now() int64 { return s.club.now() }
 
 func (s *Space) notify(keys []string) { s.club.publish(Event{Space: s.name, SessionKeys: keys}) }
+
+func (s *Space) log() interface {
+	Warn(string, ...any)
+	Debug(string, ...any)
+} {
+	return s.club.opts.Log
+}
+
+func badInput(msg string) *protocol.Error {
+	return protocol.Invalid(msg).Because(protocol.ReasonInvalidInput)
+}
+
+func noSession() *protocol.Error {
+	return protocol.NotFound("no such session").Because(protocol.ReasonSessionNotFound)
+}
+
+func noAccount() *protocol.Error {
+	return protocol.NotFound("no such account").Because(protocol.ReasonAccountNotFound)
+}
 
 // Status is agentsrc.status.
 func (s *Space) Status(ctx context.Context) (protocol.StatusResult, error) {
@@ -72,9 +135,11 @@ func (s *Space) accountView(ctx context.Context, a store.Account) (protocol.Acco
 	if err != nil {
 		return protocol.Account{}, err
 	}
-	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: a.DisplayName, Status: a.Status,
-		ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
-		SessionCount: len(sessions)}, nil
+	control, _ := ParseControl(a.AssistantControl)
+	return protocol.Account{AccountID: a.AccountID, Provider: a.Provider, DisplayName: cmpOr(a.DisplayName, a.Provider),
+		Status: a.Status, ExternalAccountID: a.ExternalAccountID, LastSyncedAt: a.LastSyncedAt, LastError: a.LastError,
+		SessionCount: len(sessions), AssistantControl: string(control), ShowQuota: a.ShowQuota,
+		Quota: s.quotaView(a, s.now())}, nil
 }
 
 // Sessions is agentsrc.sessions.
@@ -83,9 +148,20 @@ func (s *Space) Sessions(ctx context.Context) (protocol.SessionsResult, error) {
 	if err != nil {
 		return protocol.SessionsResult{}, err
 	}
+	accounts, err := s.store.ListAccounts(ctx)
+	if err != nil {
+		return protocol.SessionsResult{}, err
+	}
+	quotas := map[string]*protocol.Quota{}
+	now := s.now()
+	for _, a := range accounts {
+		quotas[a.AccountID] = s.quotaView(a, now)
+	}
 	out := protocol.SessionsResult{Sessions: make([]protocol.Session, 0, len(rows))}
 	for _, r := range rows {
-		out.Sessions = append(out.Sessions, sessionView(r))
+		v := sessionView(r)
+		v.Quota = quotas[r.AccountID]
+		out.Sessions = append(out.Sessions, v)
 	}
 	return out, nil
 }
@@ -93,21 +169,48 @@ func (s *Space) Sessions(ctx context.Context) (protocol.SessionsResult, error) {
 func sessionView(r store.Session) protocol.Session {
 	return protocol.Session{SessionKey: r.SessionKey, AccountID: r.AccountID, Provider: r.Provider, Title: r.Title,
 		Kind: r.Kind, ParentSessionKey: r.ParentSessionKey, CanSend: r.CanSend, UnreadCount: r.UnreadCount,
-		RankTimeMs: r.RankTimeMs, AvatarURL: r.AvatarURL, PreviewText: r.PreviewText, PreviewIsMine: r.PreviewIsMine}
+		RankTimeMs: r.RankTimeMs, AvatarURL: r.AvatarURL, PreviewText: prefix16(r.PreviewText, previewChars),
+		PreviewIsMine: r.PreviewIsMine, OnTopRankTimeMs: r.OnTopRankTimeMs}
+}
+
+// prefix16 is the first n UTF-16 code units of s, as the gateway's JavaScript cuts a preview.
+func prefix16(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	u := utf16.Encode([]rune(s))
+	if len(u) <= n {
+		return s
+	}
+	return string(utf16.Decode(u[:n]))
 }
 
 func (s *Space) requireSession(ctx context.Context, key string) (store.Session, error) {
 	if key == "" {
-		return store.Session{}, protocol.Invalid("session_key is required")
+		return store.Session{}, badInput("session_key is required")
 	}
 	sess, ok, err := s.store.Session(ctx, key)
 	if err != nil {
 		return store.Session{}, err
 	}
 	if !ok {
-		return store.Session{}, protocol.NotFound("no such session")
+		return store.Session{}, noSession()
 	}
 	return sess, nil
+}
+
+func (s *Space) requireAccount(ctx context.Context, id string) (store.Account, error) {
+	if id == "" {
+		return store.Account{}, badInput("account_id is required")
+	}
+	a, ok, err := s.store.Account(ctx, id)
+	if err != nil {
+		return store.Account{}, err
+	}
+	if !ok {
+		return store.Account{}, noAccount()
+	}
+	return a, nil
 }
 
 // Messages is agentsrc.messages.
@@ -120,12 +223,12 @@ func (s *Space) Messages(ctx context.Context, p protocol.MessagesParams) (protoc
 	if p.Cursor != "" {
 		c, ok := decodeCursor(p.Cursor)
 		if !ok {
-			return protocol.MessagePage{}, protocol.Invalid("invalid cursor")
+			return protocol.MessagePage{}, protocol.Invalid("invalid cursor").Because(protocol.ReasonInvalidCursor)
 		}
 		before = &c
 	}
 	if p.Limit < 0 {
-		return protocol.MessagePage{}, protocol.Invalid("limit must not be negative")
+		return protocol.MessagePage{}, badInput("limit must not be negative")
 	}
 	limit := p.Limit
 	if limit == 0 {
@@ -199,30 +302,27 @@ func (s *Space) Send(ctx context.Context, p protocol.SendParams) (protocol.Messa
 	text := strings.TrimSpace(p.Text)
 	switch {
 	case p.SessionKey == "":
-		return protocol.Message{}, protocol.Invalid("session_key is required")
+		return protocol.Message{}, badInput("session_key is required")
 	case !ValidClientID(p.ClientID):
-		return protocol.Message{}, protocol.Invalid("client_id must be a UUID")
+		return protocol.Message{}, badInput("client_id must be a UUID")
 	case text == "":
-		return protocol.Message{}, protocol.Invalid("text is required")
+		return protocol.Message{}, badInput("text is required")
 	case len(utf16.Encode([]rune(text))) > protocol.MaxText:
-		return protocol.Message{}, protocol.Invalid(fmt.Sprintf("text is longer than %d characters", protocol.MaxText))
+		return protocol.Message{}, badInput(fmt.Sprintf("text is longer than %d characters", protocol.MaxText))
 	}
 	sess, err := s.requireSession(ctx, p.SessionKey)
 	if err != nil {
 		return protocol.Message{}, err
 	}
 	if !sess.CanSend {
-		return protocol.Message{}, protocol.Conflict("this session is read-only")
+		return protocol.Message{}, protocol.Conflict("this session is read-only").Because(protocol.ReasonSessionReadOnly)
 	}
-	acct, ok, err := s.store.Account(ctx, sess.AccountID)
+	acct, err := s.requireAccount(ctx, sess.AccountID)
 	if err != nil {
 		return protocol.Message{}, err
 	}
-	if !ok {
-		return protocol.Message{}, protocol.NotFound("no such session")
-	}
 	if acct.Status == protocol.AccountPaused {
-		return protocol.Message{}, protocol.Conflict("the account is paused")
+		return protocol.Message{}, protocol.Conflict("the account is paused").Because(protocol.ReasonAccountPaused)
 	}
 	now := s.now()
 	row, inserted, err := s.store.EnqueueOutbox(ctx, store.Outbox{ClientID: p.ClientID, SessionKey: sess.SessionKey,
@@ -232,7 +332,7 @@ func (s *Space) Send(ctx context.Context, p protocol.SendParams) (protocol.Messa
 	}
 	if !inserted {
 		if row.SessionKey != sess.SessionKey {
-			return protocol.Message{}, protocol.Conflict("client_id is in use in another session")
+			return protocol.Message{}, protocol.Conflict("client_id is in use in another session").Because(protocol.ReasonClientIDInUse)
 		}
 		return localMessage(row), nil
 	}
@@ -246,6 +346,7 @@ func (s *Space) Send(ctx context.Context, p protocol.SendParams) (protocol.Messa
 	case protocol.LocalSent:
 		if !wantsHistory(adapter) {
 			s.followUp(sess)
+			s.watchReply(sess)
 		}
 	case protocol.LocalUnconfirmed:
 		s.confirmLater(settled, sess)
@@ -272,7 +373,7 @@ func (s *Space) dispatch(ctx context.Context, row store.Outbox, sess store.Sessi
 	}
 	status, code := s.attempt(ctx, claimed, sess)
 	if err := s.store.SettleOutbox(ctx, claimed.ClientID, status, code, s.now()); err != nil {
-		s.club.opts.Log.Warn("settle outbox failed", "space", s.name, "err", err)
+		s.log().Warn("settle outbox failed", "space", s.name, "err", err)
 	}
 	claimed.Status, claimed.LastError = status, code
 	return claimed
@@ -300,6 +401,7 @@ func (s *Space) attempt(ctx context.Context, row store.Outbox, sess store.Sessio
 			res, err = adapter.Send(ctx, fresh, ref, msg, sc)
 		}
 	}
+	s.observe(sess.AccountID, err)
 	if err != nil {
 		if !provider.IsRefusal(err) {
 			return protocol.LocalUnconfirmed, "SEND_UNCONFIRMED"
@@ -311,11 +413,12 @@ func (s *Space) attempt(ctx context.Context, row store.Outbox, sess store.Sessio
 		}
 		return protocol.LocalFailed, code
 	}
+	s.noteQuota(sess.AccountID, res.Quota)
 	switch res.Status {
 	case provider.Sent:
 		if len(res.Messages) > 0 {
-			if _, err := s.store.UpsertMessages(ctx, sess.SessionKey, storeMessages(sess.SessionKey, res.Messages), s.now()); err != nil {
-				s.club.opts.Log.Warn("store answered messages failed", "space", s.name, "err", err)
+			if _, err := s.store.UpsertMessages(ctx, sess.SessionKey, storeMessages(sess.SessionKey, res.Messages, 0), s.now()); err != nil {
+				s.log().Warn("store answered messages failed", "space", s.name, "err", err)
 			}
 		}
 		return protocol.LocalSent, ""
@@ -332,21 +435,30 @@ func cmpOr(a, b string) string {
 	return b
 }
 
+// refresh swaps a refused credential once, shared by every caller that hit it: when another caller already stored
+// a fresh one that is answered; a refused refresh answers "".
 func (s *Space) refresh(ctx context.Context, accountID string, adapter provider.Adapter, used string) string {
 	r, ok := adapter.(provider.CredentialRefresher)
 	if !ok {
 		return ""
 	}
-	fresh, err := r.RefreshCredential(ctx, used)
-	if err != nil || fresh == "" {
-		return ""
-	}
-	if err := s.vault.Put(ctx, accountID, fresh); err != nil {
-		return ""
-	}
+	fresh, _ := join(&s.mu, s.refreshing, accountID, func() (string, error) {
+		if stored, found, err := s.vault.Get(ctx, accountID); err == nil && found && stored != used {
+			return stored, nil
+		}
+		fresh, err := r.RefreshCredential(ctx, used)
+		if err != nil || fresh == "" {
+			return "", err
+		}
+		if err := s.vault.Put(ctx, accountID, fresh); err != nil {
+			return "", err
+		}
+		return fresh, nil
+	})
 	return fresh
 }
 
+// history is the stored turns a provider without its own transcript is sent: text blocks only.
 func (s *Space) history(ctx context.Context, key string) ([]provider.Turn, error) {
 	rows, _, err := s.store.Messages(ctx, key, historyMessages, nil)
 	if err != nil {
@@ -357,27 +469,88 @@ func (s *Space) history(ctx context.Context, key string) ([]provider.Turn, error
 		if m.Role != protocol.RoleUser && m.Role != protocol.RoleAssistant {
 			continue
 		}
-		if t := strings.TrimSpace(m.Text()); t != "" {
+		parts := make([]string, len(m.Blocks))
+		for i, b := range m.Blocks {
+			if b.Type == "text" {
+				parts[i] = b.Text
+			}
+		}
+		if t := strings.TrimSpace(strings.Join(parts, "\n")); t != "" {
 			out = append(out, provider.Turn{Role: m.Role, Text: t})
 		}
 	}
 	return out, nil
 }
 
-func storeMessages(key string, in []provider.RemoteMessage) []store.Message {
+// storeMessages are a provider's messages as stored; one without a time takes fallbackMs (the session's activity
+// time), else the store keeps its first-seen time.
+func storeMessages(key string, in []provider.RemoteMessage, fallbackMs int64) []store.Message {
 	out := make([]store.Message, len(in))
 	for i, m := range in {
 		out[i] = store.Message{SessionKey: key, ExternalID: m.ExternalID, Role: m.Role, Blocks: m.Blocks,
-			CreateTimeMs: m.CreateTimeMs, Position: m.Position}
+			CreateTimeMs: cmpOrInt(m.CreateTimeMs, fallbackMs), Position: m.Position}
 	}
 	return out
 }
 
-// followUp syncs the session's account again at the follow-up delays, to pick up the agent's answer.
+func cmpOrInt(a, b int64) int64 {
+	if a != 0 {
+		return a
+	}
+	return b
+}
+
+// followUp reads the session again at the follow-up delays, to pick up the agent's answer.
 func (s *Space) followUp(sess store.Session) {
 	for _, d := range s.club.opts.FollowUps {
-		s.club.after(d, func() { _ = s.SyncAccount(context.Background(), sess.AccountID) })
+		s.club.after(d, func() { s.sync(s.club.ctx, sess.AccountID, sess.SessionKey) })
 	}
+}
+
+// watchReply, while a reply is awaited, reads the session as soon as a provider that can push (Grok Bot's
+// transcript watch) says it changed, instead of at the next follow-up. One watch per session, closed when the agent
+// goes idle after a change, after the watch limit, or when the club closes; the follow-ups stay as the fallback.
+func (s *Space) watchReply(sess store.Session) {
+	adapter, _ := s.club.opts.Registry.Get(sess.Provider)
+	w, ok := adapter.(provider.Watcher)
+	if !ok || s.club.opts.WatchLimit < 0 {
+		return
+	}
+	s.mu.Lock()
+	if _, running := s.watching[sess.SessionKey]; running {
+		s.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.club.ctx, s.club.opts.WatchLimit)
+	s.watching[sess.SessionKey] = cancel
+	s.mu.Unlock()
+	s.club.goTracked(func() {
+		defer func() {
+			cancel()
+			s.mu.Lock()
+			delete(s.watching, sess.SessionKey)
+			s.mu.Unlock()
+		}()
+		cred, found, err := s.vault.Get(ctx, sess.AccountID)
+		if err != nil || !found {
+			return
+		}
+		changed := false
+		err = w.Watch(ctx, cred, provider.SessionRef{ExternalID: sess.ExternalID, Ref: sess.Ref}, func(e provider.WatchEvent) bool {
+			if ctx.Err() != nil {
+				return false
+			}
+			if e == provider.WatchChanged {
+				changed = true
+				s.sync(context.WithoutCancel(ctx), sess.AccountID, sess.SessionKey)
+				return true
+			}
+			return !changed
+		})
+		if err != nil && ctx.Err() == nil {
+			s.log().Warn("watch failed", "space", s.name, "provider", sess.Provider, "code", provider.CodeOf(err))
+		}
+	})
 }
 
 // confirmLater asks the provider, read-only, whether an unconfirmed send arrived. The message itself is never sent
@@ -388,7 +561,7 @@ func (s *Space) confirmLater(row store.Outbox, sess store.Session) {
 		return
 	}
 	for _, d := range s.club.opts.FollowUps {
-		s.club.after(d, func() { s.confirm(context.Background(), row.ClientID, sess) })
+		s.club.after(d, func() { s.confirm(s.club.ctx, row.ClientID, sess) })
 	}
 }
 
@@ -404,7 +577,11 @@ func (s *Space) confirm(ctx context.Context, clientID string, sess store.Session
 		return
 	}
 	answer, err := c.ConfirmSend(ctx, cred, provider.SessionRef{ExternalID: sess.ExternalID, Ref: sess.Ref}, clientID)
-	if err != nil || answer.Status == provider.ConfirmUnknown {
+	if err != nil {
+		s.log().Warn("send confirmation failed", "space", s.name, "provider", sess.Provider, "code", provider.CodeOf(err))
+		return
+	}
+	if answer.Status == provider.ConfirmUnknown {
 		return
 	}
 	status, code := protocol.LocalSent, ""
@@ -414,7 +591,7 @@ func (s *Space) confirm(ctx context.Context, clientID string, sess store.Session
 	if changed, _ := s.store.ConfirmOutbox(ctx, clientID, status, code, s.now()); changed {
 		s.notify([]string{sess.SessionKey})
 		if status == protocol.LocalSent {
-			_ = s.SyncAccount(ctx, sess.AccountID)
+			s.sync(ctx, sess.AccountID, sess.SessionKey)
 		}
 	}
 }
@@ -455,7 +632,7 @@ func (s *Space) Recover(ctx context.Context) error { return s.recover(ctx) }
 // DeleteMessage is agentsrc.delete_message: it cancels a send that has not gone out yet.
 func (s *Space) DeleteMessage(ctx context.Context, p protocol.DeleteMessageParams) error {
 	if p.ClientID == "" {
-		return protocol.Invalid("client_id is required")
+		return badInput("client_id is required")
 	}
 	sess, err := s.requireSession(ctx, p.SessionKey)
 	if err != nil {
@@ -466,7 +643,27 @@ func (s *Space) DeleteMessage(ctx context.Context, p protocol.DeleteMessageParam
 		return err
 	}
 	if !ok {
-		return protocol.Conflict("no pending send with that client_id")
+		return protocol.Conflict("no pending send with that client_id").Because(protocol.ReasonNotPending)
+	}
+	s.notify([]string{sess.SessionKey})
+	return nil
+}
+
+// DismissOutbox is club.outbox.dismiss: it removes a failed send, releasing its client id.
+func (s *Space) DismissOutbox(ctx context.Context, p protocol.OutboxParams) error {
+	if p.ClientID == "" {
+		return badInput("client_id is required")
+	}
+	sess, err := s.requireSession(ctx, p.SessionKey)
+	if err != nil {
+		return err
+	}
+	ok, err := s.store.DismissOutbox(ctx, p.ClientID, sess.SessionKey)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return protocol.Conflict("no failed send with that client_id").Because(protocol.ReasonNotPending)
 	}
 	s.notify([]string{sess.SessionKey})
 	return nil
@@ -501,31 +698,56 @@ func (s *Space) Search(ctx context.Context, p protocol.SearchParams) (protocol.S
 	return protocol.SearchResult{Hits: hits}, nil
 }
 
+func (s *Space) adapter(name string) (provider.Adapter, error) {
+	adapter, ok := s.club.opts.Registry.Get(name)
+	if ok {
+		return adapter, nil
+	}
+	if s.club.opts.Registry.IsKnown(name) {
+		return nil, protocol.Unsupported(fmt.Sprintf("provider %s is not available in this build", name)).
+			Because(protocol.ReasonProviderUnavailable)
+	}
+	return nil, badInput(fmt.Sprintf("unknown provider %q", name))
+}
+
+func verifyError(err error) error {
+	if provider.IsRefusal(err) {
+		code := provider.CodeOf(err)
+		return protocol.Invalid("the provider refused the credential: " + code).Because(code)
+	}
+	return protocol.Failure("SYNC_FAILED", "verify failed")
+}
+
+func checkCredential(cred string) error {
+	if len(cred) < minCredential || len(cred) > maxCredential {
+		return badInput("credential must be 8 to 8192 characters")
+	}
+	return nil
+}
+
 // AddAccount pairs an account: the provider checks the credential, which then goes into the vault and never comes
-// back out. The account starts with assistant control off and is synced once.
+// back out. The account starts with assistant control off and is synced once. The same remote account twice in a
+// space is a conflict.
 func (s *Space) AddAccount(ctx context.Context, p protocol.AddAccountParams) (protocol.Account, error) {
 	cred := strings.TrimSpace(p.Credential)
-	switch {
-	case p.Provider == "":
-		return protocol.Account{}, protocol.Invalid("provider is required")
-	case len(cred) < minCredential || len(cred) > maxCredential:
-		return protocol.Account{}, protocol.Invalid("credential must be 8 to 8192 characters")
-	case len([]rune(p.DisplayName)) > 80:
-		return protocol.Account{}, protocol.Invalid("display_name is longer than 80 characters")
+	name := strings.TrimSpace(p.DisplayName)
+	if p.Provider == "" {
+		return protocol.Account{}, badInput("provider is required")
 	}
-	adapter, ok := s.club.opts.Registry.Get(p.Provider)
-	if !ok {
-		if s.club.opts.Registry.IsKnown(p.Provider) {
-			return protocol.Account{}, protocol.Unsupported(fmt.Sprintf("provider %s is not available in this build", p.Provider))
-		}
-		return protocol.Account{}, protocol.Invalid(fmt.Sprintf("unknown provider %q", p.Provider))
+	if err := checkCredential(cred); err != nil {
+		return protocol.Account{}, err
+	}
+	if len(utf16.Encode([]rune(name))) > maxDisplayName {
+		return protocol.Account{}, badInput("display_name is longer than 80 characters")
+	}
+	adapter, err := s.adapter(p.Provider)
+	if err != nil {
+		return protocol.Account{}, err
 	}
 	remote, err := adapter.Verify(ctx, cred)
+	s.observe("", err)
 	if err != nil {
-		if provider.IsRefusal(err) {
-			return protocol.Account{}, protocol.Invalid("the provider refused the credential: " + provider.CodeOf(err))
-		}
-		return protocol.Account{}, fmt.Errorf("verify: %s", provider.CodeOf(err))
+		return protocol.Account{}, verifyError(err)
 	}
 	existing, err := s.store.ListAccounts(ctx)
 	if err != nil {
@@ -533,7 +755,8 @@ func (s *Space) AddAccount(ctx context.Context, p protocol.AddAccountParams) (pr
 	}
 	for _, a := range existing {
 		if a.Provider == p.Provider && remote.ExternalAccountID != "" && a.ExternalAccountID == remote.ExternalAccountID {
-			return protocol.Account{}, protocol.Conflict("this account is already paired as " + a.AccountID)
+			return protocol.Account{}, protocol.Conflict("this account is already paired as " + a.AccountID).
+				Because(protocol.ReasonAlreadyPaired)
 		}
 	}
 	id := NewAccountID()
@@ -541,54 +764,40 @@ func (s *Space) AddAccount(ctx context.Context, p protocol.AddAccountParams) (pr
 		return protocol.Account{}, err
 	}
 	now := s.now()
-	name := strings.TrimSpace(p.DisplayName)
-	if name == "" {
-		name = remote.DisplayName
-	}
-	if err := s.store.InsertAccount(ctx, store.Account{AccountID: id, Provider: p.Provider, DisplayName: name,
+	if err := s.store.InsertAccount(ctx, store.Account{AccountID: id, Provider: p.Provider, DisplayName: cmpOr(name, remote.DisplayName),
 		ExternalAccountID: remote.ExternalAccountID, Status: protocol.AccountActive,
 		AssistantControl: string(DefaultControl), CreatedAt: now, UpdatedAt: now}); err != nil {
 		_ = s.vault.Delete(ctx, id)
 		return protocol.Account{}, err
 	}
-	_ = s.SyncAccount(ctx, id)
+	s.sync(ctx, id, "")
 	s.notify(nil)
 	return s.Account(ctx, id)
 }
 
 // Account is one account's view.
 func (s *Space) Account(ctx context.Context, id string) (protocol.Account, error) {
-	a, ok, err := s.store.Account(ctx, id)
+	a, err := s.requireAccount(ctx, id)
 	if err != nil {
 		return protocol.Account{}, err
-	}
-	if !ok {
-		return protocol.Account{}, protocol.NotFound("no such account")
 	}
 	return s.accountView(ctx, a)
 }
 
 // AssistantControl is an account's assistant control level.
 func (s *Space) AssistantControl(ctx context.Context, id string) (Control, error) {
-	a, ok, err := s.store.Account(ctx, id)
+	a, err := s.requireAccount(ctx, id)
 	if err != nil {
 		return "", err
-	}
-	if !ok {
-		return "", protocol.NotFound("no such account")
 	}
 	return ParseControl(a.AssistantControl)
 }
 
-// RemoveAccount unpairs an account: its credential is deleted; with deleteData its sessions and messages too.
+// RemoveAccount unpairs an account: its credential is deleted; with deleteData its sessions and messages too,
+// otherwise they are kept, unlisted.
 func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParams) error {
-	if p.AccountID == "" {
-		return protocol.Invalid("account_id is required")
-	}
-	if _, ok, err := s.store.Account(ctx, p.AccountID); err != nil {
+	if _, err := s.requireAccount(ctx, p.AccountID); err != nil {
 		return err
-	} else if !ok {
-		return protocol.NotFound("no such account")
 	}
 	if err := s.vault.Delete(ctx, p.AccountID); err != nil {
 		return err
@@ -596,94 +805,11 @@ func (s *Space) RemoveAccount(ctx context.Context, p protocol.RemoveAccountParam
 	if err := s.store.RemoveAccount(ctx, p.AccountID, p.DeleteData, s.now()); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	delete(s.quota, p.AccountID)
+	s.mu.Unlock()
 	s.notify(nil)
 	return nil
-}
-
-// SyncAccount is one sync round of an account: its sessions, then each session's latest messages. A failure is
-// recorded on the account (lastError), not returned, unless the account does not exist.
-func (s *Space) SyncAccount(ctx context.Context, id string) error {
-	acct, ok, err := s.store.Account(ctx, id)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return protocol.NotFound("no such account")
-	}
-	if acct.Status == protocol.AccountPaused {
-		return nil
-	}
-	fail := func(code string) error {
-		patch := store.AccountPatch{LastError: &code}
-		if code == provider.CodeAuthFailed || code == "NOT_PAIRED" {
-			st := protocol.AccountError
-			patch.Status = &st
-		}
-		if err := s.store.UpdateAccount(ctx, id, patch, s.now()); err != nil {
-			return err
-		}
-		s.notify(nil)
-		return nil
-	}
-	adapter, ok := s.club.opts.Registry.Get(acct.Provider)
-	if !ok {
-		return fail("PROVIDER_UNAVAILABLE")
-	}
-	cred, found, err := s.vault.Get(ctx, id)
-	if err != nil || !found {
-		return fail("NOT_PAIRED")
-	}
-	remote, err := adapter.ListSessions(ctx, cred)
-	if err != nil {
-		return fail(provider.CodeOf(err))
-	}
-	now := s.now()
-	rows := make([]store.Session, len(remote))
-	for i, r := range remote {
-		rows[i] = store.Session{SessionKey: SessionKey(acct.Provider, id, r.ExternalID), AccountID: id,
-			Provider: acct.Provider, ExternalID: r.ExternalID, Title: r.Title, Kind: cmpOr(r.Kind, protocol.KindMain),
-			CanSend: r.CanSend, AvatarURL: r.AvatarURL, Ref: r.Ref, RankTimeMs: r.LastActivityMs}
-		if r.ParentExternalID != "" {
-			rows[i].ParentSessionKey = SessionKey(acct.Provider, id, r.ParentExternalID)
-		}
-	}
-	listChanged, err := s.store.UpsertSessions(ctx, rows, now)
-	if err != nil {
-		return err
-	}
-	var touched []string
-	for i, r := range remote {
-		page, err := adapter.ListMessages(ctx, cred, r.SessionRef(), provider.ListOptions{Limit: messagePage})
-		if err != nil {
-			if listChanged > 0 || len(touched) > 0 {
-				s.notify(changedKeys(listChanged, touched))
-			}
-			return fail(provider.CodeOf(err))
-		}
-		n, err := s.store.UpsertMessages(ctx, rows[i].SessionKey, storeMessages(rows[i].SessionKey, page.Messages), s.now())
-		if err != nil {
-			return err
-		}
-		if n > 0 {
-			touched = append(touched, rows[i].SessionKey)
-		}
-	}
-	active, empty, synced := protocol.AccountActive, "", s.now()
-	if err := s.store.UpdateAccount(ctx, id, store.AccountPatch{Status: &active, LastError: &empty, LastSyncedAt: &synced}, synced); err != nil {
-		return err
-	}
-	if listChanged > 0 || len(touched) > 0 || acct.Status != active || acct.LastError != "" {
-		s.notify(changedKeys(listChanged, touched))
-	}
-	return nil
-}
-
-// changedKeys is what an updated event names: nil (the list) when sessions were added or changed.
-func changedKeys(listChanged int, touched []string) []string {
-	if listChanged > 0 {
-		return nil
-	}
-	return touched
 }
 
 // errorIsProtocol says whether err is one of the four protocol refusals.

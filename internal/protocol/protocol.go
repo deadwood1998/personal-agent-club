@@ -521,9 +521,12 @@ type OutboxParams struct {
 	ClientID   string `json:"client_id"`
 }
 
-// ImportParams are club.import's: the path of an import bundle on club's machine.
+// ImportParams are club.import's: the path of an import bundle on club's machine, the providers to take (all when
+// empty) and whether to only check the bundle.
 type ImportParams struct {
-	Path string `json:"path"`
+	Path          string   `json:"path"`
+	OnlyProviders []string `json:"only_providers,omitempty"`
+	DryRun        bool     `json:"dry_run,omitempty"`
 }
 
 // ImportedAccount is what club.import checked for one account.
@@ -534,11 +537,23 @@ type ImportedAccount struct {
 	Sessions        int    `json:"sessions"`
 	Messages        int    `json:"messages"`
 	LatestMessageMs int64  `json:"latestMessageMs"`
-	// Error is why Verified is false: a provider code, NO_CREDENTIAL, PROVIDER_UNAVAILABLE or REMOVED.
+	// Error is why Verified is false: a provider code, NO_CREDENTIAL, ACCOUNT_MISMATCH or REMOVED.
 	Error string `json:"error,omitempty"`
+	// HasCredential says whether the bundle carries the account's credential.
+	HasCredential bool `json:"hasCredential,omitempty"`
 }
 
-// ImportResult is club.import's answer.
+// SkippedAccount is an account of a bundle that was not imported, with its sessions, messages and credential.
+type SkippedAccount struct {
+	AccountID string `json:"accountId"`
+	Provider  string `json:"provider"`
+	// Reason is PROVIDER_UNSUPPORTED (this build cannot reach the provider, e.g. a browser one) or NOT_SELECTED.
+	Reason string `json:"reason"`
+}
+
+// ImportResult is club.import's answer. A dry run's counts are the bundle's and nothing is verified.
 type ImportResult struct {
 	Accounts []ImportedAccount `json:"accounts"`
+	Skipped  []SkippedAccount  `json:"skipped"`
+	DryRun   bool              `json:"dryRun,omitempty"`
 }

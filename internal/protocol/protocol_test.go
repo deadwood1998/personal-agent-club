@@ -74,7 +74,8 @@ func TestGolden(t *testing.T) {
 			"settings": Settings{BrowserIdentity: BrowserIdentity{Locale: "zh-CN", ExtraArgs: []string{}}},
 			"import": ImportResult{Accounts: []ImportedAccount{{AccountID: "a0123456789ab", Provider: "cue", Verified: true,
 				Sessions: 2, Messages: 6, LatestMessageMs: 1800000000000}, {AccountID: "a0123456789ac", Provider: "groq",
-				Error: "NO_CREDENTIAL"}}},
+				Error: "NO_CREDENTIAL"}}, Skipped: []SkippedAccount{{AccountID: "a0123456789ad", Provider: "muse",
+				Reason: "PROVIDER_UNSUPPORTED"}}},
 		},
 		"club_params": map[string]any{
 			"update": UpdateAccountParams{AccountID: "a0123456789ab", Paused: ptr(true), DisplayName: ptr("x"),
@@ -85,7 +86,7 @@ func TestGolden(t *testing.T) {
 			"live":               SessionParams{SessionKey: "k"},
 			"settings_set":       SettingsParams{BrowserIdentity: &BrowserIdentity{UserAgent: "ua", ExtraArgs: []string{"--mute-audio"}}},
 			"outbox_dismiss":     OutboxParams{SessionKey: "k", ClientID: "00000000-0000-4000-8000-000000000001"},
-			"import":             ImportParams{Path: "/tmp/bundle.json"},
+			"import":             ImportParams{Path: "/tmp/bundle.json", OnlyProviders: []string{"grok_bot"}, DryRun: true},
 		},
 		"quota": Quota{State: QuotaOK, Remaining: ptr(0.62), Kind: QuotaKindTokens, Label: "62% left", ResetsAt: 1794500000000,
 			CheckedAt: 1794496400000, Source: QuotaSourceProvider, Stale: false, Show: true},

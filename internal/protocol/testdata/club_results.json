@@ -35,6 +35,13 @@
         "latestMessageMs": 0,
         "error": "NO_CREDENTIAL"
       }
+    ],
+    "skipped": [
+      {
+        "accountId": "a0123456789ad",
+        "provider": "muse",
+        "reason": "PROVIDER_UNSUPPORTED"
+      }
     ]
   },
   "live": {

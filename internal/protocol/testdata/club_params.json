@@ -3,7 +3,11 @@
     "account_id": "a0123456789ab"
   },
   "import": {
-    "path": "/tmp/bundle.json"
+    "path": "/tmp/bundle.json",
+    "only_providers": [
+      "grok_bot"
+    ],
+    "dry_run": true
   },
   "live": {
     "session_key": "k"

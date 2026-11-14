@@ -87,28 +87,51 @@ func (s *Space) call(ctx context.Context, method, name string, params json.RawMe
 func (s *Space) callClub(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
 	case protocol.MethodClubAccountsAdd:
-		var p protocol.AddAccountParams
-		if err := decode(params, &p); err != nil {
-			return nil, err
-		}
-		return s.AddAccount(ctx, p)
+		return call(params, func(p protocol.AddAccountParams) (any, error) { return s.AddAccount(ctx, p) })
+	case protocol.MethodClubAccountsUpdate:
+		return call(params, func(p protocol.UpdateAccountParams) (any, error) { return s.UpdateAccount(ctx, p) })
+	case protocol.MethodClubAccountsReplaceCred:
+		return call(params, func(p protocol.ReplaceCredentialParams) (any, error) { return s.ReplaceCredential(ctx, p) })
 	case protocol.MethodClubAccountsRemove:
-		var p protocol.RemoveAccountParams
-		if err := decode(params, &p); err != nil {
-			return nil, err
-		}
-		return protocol.Empty{}, s.RemoveAccount(ctx, p)
+		return call(params, func(p protocol.RemoveAccountParams) (any, error) { return protocol.Empty{}, s.RemoveAccount(ctx, p) })
 	case protocol.MethodClubAccountsSync:
-		var p protocol.AccountParams
-		if err := decode(params, &p); err != nil {
-			return nil, err
-		}
-		if err := s.SyncAccount(ctx, p.AccountID); err != nil {
-			return nil, err
-		}
-		return s.Account(ctx, p.AccountID)
+		return call(params, func(p protocol.AccountParams) (any, error) {
+			if err := s.SyncAccount(ctx, p.AccountID); err != nil {
+				return nil, err
+			}
+			return s.Account(ctx, p.AccountID)
+		})
+	case protocol.MethodClubLive:
+		return call(params, func(p protocol.SessionParams) (any, error) { return s.Live(ctx, p) })
+	case protocol.MethodClubSettingsGet:
+		return s.Settings(ctx)
+	case protocol.MethodClubSettingsSet:
+		return call(params, func(p protocol.SettingsParams) (any, error) { return s.SetSettings(ctx, p) })
+	case protocol.MethodClubOutboxDismiss:
+		return call(params, func(p protocol.OutboxParams) (any, error) { return protocol.Empty{}, s.DismissOutbox(ctx, p) })
+	case protocol.MethodClubLoginsGrokBotStart:
+		return call(params, func(p protocol.GrokBotLoginStartParams) (any, error) { return s.StartGrokBotLogin(ctx, p) })
+	case protocol.MethodClubLoginsGrokBotPoll:
+		return call(params, func(p protocol.LoginParams) (any, error) { return s.PollGrokBotLogin(ctx, p) })
+	case protocol.MethodClubLoginsGrokBotCancel:
+		return call(params, func(p protocol.LoginParams) (any, error) { return protocol.Empty{}, s.CancelGrokBotLogin(ctx, p) })
+	case protocol.MethodClubImport:
+		return call(params, func(p protocol.ImportParams) (any, error) {
+			return s.Import(ctx, p.Path, ImportOptions{OnlyProviders: p.OnlyProviders, DryRun: p.DryRun})
+		})
+	case protocol.MethodClubSessionsStart, protocol.MethodClubSessionsInterrupt:
+		return nil, protocol.Unsupported(method + ": no provider in this build can start or interrupt a session").
+			Because(protocol.ReasonProviderUnavailable)
 	}
 	return nil, protocol.Unsupported(method + " is not implemented yet")
+}
+
+func call[P any](params json.RawMessage, f func(P) (any, error)) (any, error) {
+	var p P
+	if err := decode(params, &p); err != nil {
+		return nil, err
+	}
+	return f(p)
 }
 
 func decode(params json.RawMessage, v any) error {
@@ -117,7 +140,7 @@ func decode(params json.RawMessage, v any) error {
 		return nil
 	}
 	if err := json.Unmarshal(params, v); err != nil {
-		return protocol.Invalid("invalid params: " + err.Error())
+		return badInput("invalid params: " + err.Error())
 	}
 	return nil
 }
