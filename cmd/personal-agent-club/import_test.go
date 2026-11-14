@@ -73,8 +73,8 @@ func TestImportDryRunWritesNothing(t *testing.T) {
 	if _, err := os.Stat(data); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("a dry run created the data directory: %v", err)
 	}
-	if len(u.Calls()) != 0 {
-		t.Fatalf("a dry run called a provider: %+v", u.Calls())
+	if len(u.calls()) != 0 {
+		t.Fatalf("a dry run called a provider: %+v", u.calls())
 	}
 	for _, want := range []string{grokAcct, groqAcct, cueAcct, "would import", "skipped: PROVIDER_UNSUPPORTED", "Cue · 小助手",
 		"3 account(s) would be imported", "3 session(s)"} {
@@ -88,7 +88,7 @@ func TestImportDryRunWritesNothing(t *testing.T) {
 		t.Fatalf("import: %d %s", code, errOut)
 	}
 	before := snapshot(t, data)
-	calls := len(u.Calls())
+	calls := len(u.calls())
 	code, out, errOut = runCmd(t, u, "import", "-data", data, "-dry-run", "-json", "-only-provider", "groq,cue", bundle)
 	if code != 0 {
 		t.Fatalf("%d %s", code, errOut)
@@ -96,7 +96,7 @@ func TestImportDryRunWritesNothing(t *testing.T) {
 	if after := snapshot(t, data); !maps.Equal(before, after) {
 		t.Fatalf("a dry run changed the directory:\n%v\n%v", before, after)
 	}
-	if len(u.Calls()) != calls {
+	if len(u.calls()) != calls {
 		t.Fatal("a dry run called a provider")
 	}
 	r := importResult(t, out)
@@ -128,12 +128,12 @@ func TestImportIsIdempotentSendsNothingAndSkipsBrowserAccounts(t *testing.T) {
 		t.Fatalf("a second import differs: %+v", again)
 	}
 	// verification only: one read per account and import, no send, no sync
-	for _, c := range u.Calls() {
+	for _, c := range u.calls() {
 		if c.Path != "/openai/v1/models" && c.Path != "/aiserver.v1.DashboardService/GetMe" && c.Path != "/v2/agent.list" {
 			t.Errorf("an import called %s %s", c.Method, c.Path)
 		}
 	}
-	if n := len(u.Calls()); n != 6 {
+	if n := len(u.calls()); n != 6 {
 		t.Errorf("%d provider calls for two imports of three accounts", n)
 	}
 

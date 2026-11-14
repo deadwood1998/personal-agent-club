@@ -101,10 +101,25 @@ func (u *upstream) answer(f func(providertest.Call) (providertest.Answer, bool))
 	u.mu.Unlock()
 }
 
+// calls are the calls to a provider's API. Others are left out: another program on the machine may probe a test
+// server's port.
+func (u *upstream) calls() []providertest.Call {
+	var out []providertest.Call
+	for _, c := range u.Calls() {
+		for _, p := range []string{"/openai/v1/", "/aiserver.v1.", "/v2/", "/auth/", "/oauth/"} {
+			if strings.HasPrefix(c.Path, p) {
+				out = append(out, c)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // count is how many calls went to path.
 func (u *upstream) count(path string) int {
 	n := 0
-	for _, c := range u.Calls() {
+	for _, c := range u.calls() {
 		if c.Path == path {
 			n++
 		}
