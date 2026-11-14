@@ -36,6 +36,9 @@ type Options struct {
 	// PollInterval is how often every open space's accounts are synced; 0 turns polling off (sync then happens on
 	// pairing, on club.accounts.sync and after sends).
 	PollInterval time.Duration
+	// NoRecovery opens spaces without recovering their outboxes (claimed sends become unconfirmed, pending ones go
+	// out): for a tool that opens a data directory offline (an import) and must never send. The next owner recovers.
+	NoRecovery bool
 	// WatchLimit is how long a provider's push stays open after a send; 0 is DefaultWatchLimit, negative turns
 	// watching off.
 	WatchLimit time.Duration
@@ -119,8 +122,10 @@ func (c *Club) Space(ctx context.Context, name string) (*Space, error) {
 	s := newSpace(name, c, st, v)
 	c.spaces[name] = s
 	c.mu.Unlock()
-	if err := s.recover(ctx); err != nil {
-		c.opts.Log.Warn("outbox recovery failed", "space", name, "err", err)
+	if !c.opts.NoRecovery {
+		if err := s.recover(ctx); err != nil {
+			c.opts.Log.Warn("outbox recovery failed", "space", name, "err", err)
+		}
 	}
 	if c.opts.PollInterval > 0 {
 		c.goTracked(func() { s.poll(c.ctx, c.opts.PollInterval) })
