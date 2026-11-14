@@ -1,6 +1,6 @@
 // Package vault keeps account credentials. Credentials go in and are read back only by the core to call a
-// provider; no protocol method ever returns one. An encrypted file implementation (AES-256-GCM, key kept outside the
-// database) comes later; Memory is for tests and the skeleton.
+// provider; no protocol method ever returns one. File keeps a space's credentials encrypted (AES-256-GCM) under a key
+// kept in its own file; Memory is for tests.
 package vault
 
 import (

@@ -141,6 +141,32 @@ func OpenSQLite(path string) (*SQLite, error) {
 	return s, nil
 }
 
+// OpenSQLiteReadOnly opens an existing store for reading only; it is never migrated or written.
+func OpenSQLiteReadOnly(path string) (*SQLite, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	q.Add("_pragma", "busy_timeout(10000)")
+	q.Add("_pragma", "query_only(1)")
+	q.Set("mode", "ro")
+	db, err := sql.Open("sqlite", "file:"+path+"?"+q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	if version != schemaVersion {
+		_ = db.Close()
+		return nil, fmt.Errorf("open %s: schema version %d, this program reads %d", path, version, schemaVersion)
+	}
+	return &SQLite{db: db}, nil
+}
+
 func (s *SQLite) migrate() error {
 	var version int
 	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
