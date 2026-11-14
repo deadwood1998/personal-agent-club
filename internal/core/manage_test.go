@@ -679,7 +679,7 @@ func TestImportKeepsIDsSkipsBrowserAccountsAndSendsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := protocol.ImportedAccount{AccountID: grokAcct, Provider: "grok_bot", Verified: true, Sessions: 1, Messages: 2,
+	want := protocol.ImportedAccount{AccountID: grokAcct, Provider: "grok_bot", DisplayName: "Grok Bot", Verified: true, Sessions: 1, Messages: 2,
 		LatestMessageMs: 1761900000000, HasCredential: true}
 	if len(res.Accounts) != 1 || res.Accounts[0] != want || len(res.Skipped) != 1 || res.Skipped[0].AccountID != museAcct {
 		t.Fatalf("%+v", res)
@@ -773,5 +773,54 @@ func TestImportRefusals(t *testing.T) {
 	res, err := f.space.Import(ctx, writeBundle(t, testBundle(), 0o600), ImportOptions{})
 	if err != nil || res.Accounts[0].Verified || res.Accounts[0].Error != "AUTH_FAILED" {
 		t.Fatalf("%+v %v", res, err)
+	}
+}
+
+// Every provider the registry has no adapter for, known (the browser ones) or not, is skipped with all its rows:
+// sessions, messages, sends and the credential.
+func TestImportSkipsEveryProviderThisBuildCannotReach(t *testing.T) {
+	ctx := context.Background()
+	b := testBundle()
+	for i, p := range []string{"dots", "claude_duet", "someday"} {
+		id := fmt.Sprintf("a00000000001%d", i)
+		key := "agent:" + p + ":" + id + ":s"
+		b["accounts"] = append(b["accounts"].([]any), map[string]any{"account_id": id, "provider": p, "status": "error",
+			"display_name": p})
+		b["sessions"] = append(b["sessions"].([]any), map[string]any{"session_key": key, "account_id": id, "provider": p,
+			"external_id": "s", "title": p, "kind": "main", "can_send": true})
+		b["messages"] = append(b["messages"].([]any), map[string]any{"session_key": key, "external_id": "m", "role": "user",
+			"blocks_json": []any{map[string]any{"type": "text", "text": "跳过的消息"}}, "create_time_ms": 5})
+		b["outbox"] = append(b["outbox"].([]any), map[string]any{"client_id": uuid(10 + i), "session_key": key,
+			"account_id": id, "text": "跳过的发送", "status": "pending", "created_at": 5, "updated_at": 5})
+		b["credentials"].(map[string]any)[id] = "fixture-skipped-credential"
+	}
+	e := newEnv(t, "grok_bot")
+	path := writeBundle(t, b, 0o600)
+	plan, err := PlanImport(path, e.club.Registry(), nil, ImportOptions{})
+	if err != nil || len(plan.Accounts) != 1 || len(plan.Skipped) != 4 {
+		t.Fatalf("%+v %v", plan, err)
+	}
+	res, err := e.space.Import(ctx, path, ImportOptions{})
+	if err != nil || len(res.Accounts) != 1 || len(res.Skipped) != 4 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	for _, s := range res.Skipped {
+		if s.Reason != SkipUnsupported || s.DisplayName == "" {
+			t.Errorf("%+v", s)
+		}
+		if _, ok, _ := e.space.vault.Get(ctx, s.AccountID); ok {
+			t.Errorf("the credential of skipped %s was stored", s.AccountID)
+		}
+		if c, _ := e.space.store.Counts(ctx, s.AccountID); c.Sessions != 0 || c.Messages != 0 {
+			t.Errorf("rows of skipped %s were stored: %+v", s.AccountID, c)
+		}
+	}
+	for i := range 3 {
+		if _, ok, _ := e.space.store.Outbox(ctx, uuid(10+i)); ok {
+			t.Errorf("a send of a skipped account was stored")
+		}
+	}
+	if hits, _ := e.space.Search(ctx, protocol.SearchParams{Q: "跳过"}); len(hits.Hits) != 0 {
+		t.Fatalf("%+v", hits)
 	}
 }

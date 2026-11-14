@@ -210,11 +210,13 @@ func planImport(b *Bundle, reg *provider.Registry, existing []store.Account, o I
 		}
 		seen[a.AccountID] = true
 		if len(o.OnlyProviders) > 0 && !slices.Contains(o.OnlyProviders, a.Provider) {
-			p.result.Skipped = append(p.result.Skipped, protocol.SkippedAccount{AccountID: a.AccountID, Provider: a.Provider, Reason: SkipNotSelected})
+			p.result.Skipped = append(p.result.Skipped, protocol.SkippedAccount{AccountID: a.AccountID, Provider: a.Provider,
+				DisplayName: a.DisplayName, Reason: SkipNotSelected})
 			continue
 		}
 		if _, ok := reg.Get(a.Provider); !ok {
-			p.result.Skipped = append(p.result.Skipped, protocol.SkippedAccount{AccountID: a.AccountID, Provider: a.Provider, Reason: SkipUnsupported})
+			p.result.Skipped = append(p.result.Skipped, protocol.SkippedAccount{AccountID: a.AccountID, Provider: a.Provider,
+				DisplayName: a.DisplayName, Reason: SkipUnsupported})
 			continue
 		}
 		ext := str(a.ExternalAccountID)
@@ -286,7 +288,7 @@ func planImport(b *Bundle, reg *provider.Registry, existing []store.Account, o I
 	}
 	counts := map[string]*protocol.ImportedAccount{}
 	for _, a := range p.rows.Accounts {
-		counts[a.AccountID] = &protocol.ImportedAccount{AccountID: a.AccountID, Provider: a.Provider}
+		counts[a.AccountID] = &protocol.ImportedAccount{AccountID: a.AccountID, Provider: a.Provider, DisplayName: a.DisplayName}
 	}
 	for _, x := range p.rows.Sessions {
 		counts[x.AccountID].Sessions++

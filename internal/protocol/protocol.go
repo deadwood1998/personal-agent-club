@@ -533,6 +533,7 @@ type ImportParams struct {
 type ImportedAccount struct {
 	AccountID       string `json:"accountId"`
 	Provider        string `json:"provider"`
+	DisplayName     string `json:"displayName,omitempty"`
 	Verified        bool   `json:"verified"`
 	Sessions        int    `json:"sessions"`
 	Messages        int    `json:"messages"`
@@ -545,8 +546,9 @@ type ImportedAccount struct {
 
 // SkippedAccount is an account of a bundle that was not imported, with its sessions, messages and credential.
 type SkippedAccount struct {
-	AccountID string `json:"accountId"`
-	Provider  string `json:"provider"`
+	AccountID   string `json:"accountId"`
+	Provider    string `json:"provider"`
+	DisplayName string `json:"displayName,omitempty"`
 	// Reason is PROVIDER_UNSUPPORTED (this build cannot reach the provider, e.g. a browser one) or NOT_SELECTED.
 	Reason string `json:"reason"`
 }
