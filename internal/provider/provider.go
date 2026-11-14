@@ -15,6 +15,8 @@ import (
 type RemoteAccount struct {
 	ExternalAccountID string
 	DisplayName       string
+	// Quota is what the answer said about the account's allowance, when it says (as SendResult.Quota).
+	Quota []QuotaReading
 }
 
 // SessionRef addresses a session at the provider: its id and the provider-specific ids kept with it (never secrets).

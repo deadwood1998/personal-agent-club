@@ -824,3 +824,228 @@ func TestImportSkipsEveryProviderThisBuildCannotReach(t *testing.T) {
 		t.Fatalf("%+v", hits)
 	}
 }
+
+// listEvents is whether sub got a "list changed" event since the last call.
+func listEvents(sub *Subscription) bool {
+	changed := false
+	for _, ev := range sub.Take() {
+		changed = changed || ev.SessionKeys == nil
+	}
+	return changed
+}
+
+func TestQuotaStatesStalenessAndAnnouncements(t *testing.T) {
+	e := newEnv(t, "groq")
+	e.p.history = true
+	e.p.sessions = []provider.RemoteSession{{ExternalID: "chat", CanSend: true}}
+	ctx := context.Background()
+	a := e.pair(t, "fixture-credential-1")
+	key := SessionKey("groq", a.AccountID, "chat")
+	sub := e.club.Subscribe(DefaultSpace)
+	defer sub.Close()
+	n := 0
+	sendWith := func(left float64) *protocol.Quota {
+		t.Helper()
+		e.p.send = func(string, provider.Outgoing) (provider.SendResult, error) {
+			return provider.SendResult{Status: provider.Sent, Quota: []provider.QuotaReading{{Kind: "requests", Limit: 100, Remaining: left}}}, nil
+		}
+		n++
+		if _, err := e.space.Send(ctx, protocol.SendParams{SessionKey: key, ClientID: uuid(n), Text: "x"}); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := e.space.Account(ctx, a.AccountID)
+		return got.Quota
+	}
+	for _, tc := range []struct {
+		left     float64
+		state    string
+		announce bool
+	}{{21, "ok", true}, {50, "ok", false}, {20, "low", true}, {1, "low", false}, {0, "exhausted", true}, {90, "ok", true}} {
+		q := sendWith(tc.left)
+		if q == nil || q.State != tc.state || q.Stale || q.Source != "provider" {
+			t.Fatalf("%v left: %+v", tc.left, q)
+		}
+		if got := listEvents(sub); got != tc.announce {
+			t.Fatalf("%v left: announced %v", tc.left, got)
+		}
+	}
+	// 15 minutes without an answer: stale, announced once by time alone
+	e.advance(15*time.Minute + time.Millisecond)
+	e.space.mu.Lock()
+	q := e.space.quota[a.AccountID]
+	e.space.mu.Unlock()
+	e.space.recheckQuota(a.AccountID, q)
+	if got, _ := e.space.Account(ctx, a.AccountID); got.Quota == nil || !got.Quota.Stale || got.Quota.State != "ok" {
+		t.Fatalf("%+v", got.Quota)
+	}
+	if !listEvents(sub) {
+		t.Fatal("going stale was not announced")
+	}
+	e.space.recheckQuota(a.AccountID, q)
+	if listEvents(sub) {
+		t.Fatal("announced twice")
+	}
+	// a 429 without Retry-After: exhausted, then unknown (no quota at all) after five minutes
+	e.p.send = func(string, provider.Outgoing) (provider.SendResult, error) {
+		return provider.SendResult{}, &provider.Error{Code: provider.CodeRateLimited, HTTPStatus: 429}
+	}
+	n++
+	if _, err := e.space.Send(ctx, protocol.SendParams{SessionKey: key, ClientID: uuid(n), Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := e.space.Account(ctx, a.AccountID)
+	if got.Quota == nil || got.Quota.State != "exhausted" || got.Quota.Source != "response" || got.Quota.ResetsAt != 0 || got.Quota.Stale {
+		t.Fatalf("%+v", got.Quota)
+	}
+	if !listEvents(sub) {
+		t.Fatal("exhausted was not announced")
+	}
+	e.space.mu.Lock()
+	q = e.space.quota[a.AccountID]
+	e.space.mu.Unlock()
+	e.advance(4 * time.Minute)
+	if got, _ := e.space.Account(ctx, a.AccountID); got.Quota == nil || got.Quota.State != "exhausted" {
+		t.Fatalf("before five minutes: %+v", got.Quota)
+	}
+	e.advance(time.Minute)
+	e.space.recheckQuota(a.AccountID, q)
+	if got, _ := e.space.Account(ctx, a.AccountID); got.Quota != nil {
+		t.Fatalf("after five minutes nothing is known: %+v", got.Quota)
+	}
+	if !listEvents(sub) {
+		t.Fatal("the end of the wait was not announced")
+	}
+	list, _ := e.space.Sessions(ctx)
+	if list.Sessions[0].Quota != nil {
+		t.Fatalf("%+v", list.Sessions[0].Quota)
+	}
+}
+
+// confirming is a scripted provider that can also confirm sends.
+type confirming struct {
+	*scripted
+	confirm func() (provider.Confirmation, error)
+}
+
+func (c confirming) ConfirmSend(context.Context, string, provider.SessionRef, string) (provider.Confirmation, error) {
+	return c.confirm()
+}
+
+// A 429 on any call about an account, whichever path made it, makes the account exhausted.
+func TestEveryCallPathNotesA429(t *testing.T) {
+	limited := &provider.Error{Code: provider.CodeRateLimited, HTTPStatus: 429, RetryAfter: time.Minute}
+	ctx := context.Background()
+	exhausted := func(t *testing.T, s *Space, id string) {
+		t.Helper()
+		got, err := s.Account(ctx, id)
+		if err != nil || got.Quota == nil || got.Quota.State != "exhausted" || got.Quota.ResetsAt == 0 {
+			t.Fatalf("%+v %v", got.Quota, err)
+		}
+		s.mu.Lock()
+		delete(s.quota, id)
+		s.mu.Unlock()
+	}
+	p := newScripted("grok_bot")
+	p.sessions = []provider.RemoteSession{{ExternalID: "bot/", CanSend: true}}
+	c := confirming{scripted: p, confirm: func() (provider.Confirmation, error) { return provider.Confirmation{}, limited }}
+	clk := &clock{t: time.UnixMilli(1_800_000_000_000)}
+	club := New(Options{Registry: provider.NewRegistry(c), Now: clk.Now, FollowUps: []time.Duration{}, WatchLimit: -1})
+	defer club.Close()
+	s, _ := club.Space(ctx, DefaultSpace)
+	a, err := s.AddAccount(ctx, protocol.AddAccountParams{Provider: "grok_bot", Credential: "fixture-credential-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := SessionKey("grok_bot", a.AccountID, "bot/")
+
+	t.Run("sync", func(t *testing.T) {
+		p.mu.Lock()
+		p.listErr = func(string) error { return limited }
+		p.mu.Unlock()
+		_ = s.SyncAccount(ctx, a.AccountID)
+		exhausted(t, s, a.AccountID)
+		p.mu.Lock()
+		p.listErr = nil
+		p.mu.Unlock()
+	})
+	t.Run("send", func(t *testing.T) {
+		p.mu.Lock()
+		p.send = func(string, provider.Outgoing) (provider.SendResult, error) { return provider.SendResult{}, limited }
+		p.mu.Unlock()
+		m, _ := s.Send(ctx, protocol.SendParams{SessionKey: key, ClientID: uuid(1), Text: "x"})
+		if m.Local == nil || m.Local.Status != "failed" || m.Local.Error != "RATE_LIMITED" {
+			t.Fatalf("%+v", m.Local)
+		}
+		exhausted(t, s, a.AccountID)
+	})
+	t.Run("confirm", func(t *testing.T) {
+		p.mu.Lock()
+		p.send = func(string, provider.Outgoing) (provider.SendResult, error) {
+			return provider.SendResult{Status: provider.Unconfirmed}, nil
+		}
+		p.mu.Unlock()
+		_, _ = s.Send(ctx, protocol.SendParams{SessionKey: key, ClientID: uuid(2), Text: "x"})
+		sess, _, _ := s.store.Session(ctx, key)
+		s.confirm(ctx, uuid(2), sess)
+		exhausted(t, s, a.AccountID)
+	})
+	t.Run("live", func(t *testing.T) {
+		p.mu.Lock()
+		p.live = func() (provider.LiveState, error) { return provider.LiveState{}, limited }
+		p.mu.Unlock()
+		if _, err := s.Live(ctx, protocol.SessionParams{SessionKey: key}); err == nil {
+			t.Fatal("no error")
+		}
+		exhausted(t, s, a.AccountID)
+	})
+	t.Run("replace credential", func(t *testing.T) {
+		p.mu.Lock()
+		p.verify = func(string) error { return limited }
+		p.mu.Unlock()
+		_, _ = s.ReplaceCredential(ctx, protocol.ReplaceCredentialParams{AccountID: a.AccountID, Credential: "fixture-credential-2"})
+		exhausted(t, s, a.AccountID)
+	})
+	t.Run("refresh", func(t *testing.T) {
+		p.mu.Lock()
+		p.verify = nil
+		p.listErr = func(string) error { return &provider.Error{Code: provider.CodeAuthFailed, HTTPStatus: 401} }
+		p.mu.Unlock()
+		p.refresh = func(string) (string, error) { return "", limited }
+		_ = s.SyncAccount(ctx, a.AccountID)
+		exhausted(t, s, a.AccountID)
+		p.refresh = nil
+		p.mu.Lock()
+		p.listErr = nil
+		p.mu.Unlock()
+	})
+	t.Run("import verify", func(t *testing.T) {
+		e := newEnv(t, "grok_bot")
+		e.p.verify = func(string) error { return limited }
+		res, err := e.space.Import(ctx, writeBundle(t, testBundle(), 0o600), ImportOptions{})
+		if err != nil || res.Accounts[0].Error != "RATE_LIMITED" {
+			t.Fatalf("%+v %v", res, err)
+		}
+		exhausted(t, e.space, grokAcct)
+	})
+}
+
+// Readings that come with a verification count: pairing a Groq key shows its quota at once.
+func TestVerifyReadingsAreKept(t *testing.T) {
+	e := newEnv(t, "groq")
+	e.p.history = true
+	e.p.sessions = []provider.RemoteSession{{ExternalID: "chat", CanSend: true}}
+	v := &verifyingQuota{scripted: e.p}
+	e.club.Registry().Register(v)
+	a, err := e.space.AddAccount(context.Background(), protocol.AddAccountParams{Provider: "groq", Credential: "fixture-credential-1"})
+	if err != nil || a.Quota == nil || a.Quota.State != "low" || a.Quota.Kind != "tokens" {
+		t.Fatalf("%+v %v", a.Quota, err)
+	}
+}
+
+type verifyingQuota struct{ *scripted }
+
+func (v *verifyingQuota) Verify(ctx context.Context, cred string) (provider.RemoteAccount, error) {
+	r, err := v.scripted.Verify(ctx, cred)
+	r.Quota = []provider.QuotaReading{{Kind: "tokens", Limit: 100, Remaining: 10}}
+	return r, err
+}

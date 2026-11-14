@@ -7,10 +7,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nwverse/personal-agent-club/internal/protocol"
 	"github.com/nwverse/personal-agent-club/internal/provider"
@@ -51,7 +53,7 @@ func TestVerifiesWithGetMeAndListsMainAndSideSessions(t *testing.T) {
 	up := providertest.Serve(t, routes(t))
 	a := New(Options{Origin: up.URL})
 	acct, err := a.Verify(ctx, key)
-	if err != nil || acct != (provider.RemoteAccount{ExternalAccountID: "auth0|fixture", DisplayName: "Grok Bot"}) {
+	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "auth0|fixture", DisplayName: "Grok Bot"}) {
 		t.Fatalf("%+v %v", acct, err)
 	}
 	c := up.Calls()[0]
@@ -189,6 +191,7 @@ func TestSendsWithTheClientIDAsMessageIDAndNeverResends(t *testing.T) {
 		{"busy", providertest.Answer{Status: 503}, provider.SendResult{Status: provider.Unconfirmed, Error: "SEND_UNCONFIRMED"}, ""},
 		{"refused", providertest.Answer{Body: grok["SendGrokBotUserMessage.refused"]}, provider.SendResult{}, "SEND_REFUSED"},
 		{"expired", providertest.Answer{Status: 401}, provider.SendResult{}, "AUTH_FAILED"},
+		{"rate limited", providertest.Answer{Status: 429, Header: http.Header{"Retry-After": {"12"}}}, provider.SendResult{}, "RATE_LIMITED"},
 	} {
 		up := providertest.Serve(t, func(providertest.Call) providertest.Answer { return tc.answer })
 		res, err := New(Options{Origin: up.URL}).Send(ctx, key, session, msg, provider.SendContext{})
@@ -197,6 +200,9 @@ func TestSendsWithTheClientIDAsMessageIDAndNeverResends(t *testing.T) {
 		}
 		if n := len(up.Calls()); n != 1 {
 			t.Errorf("%s: %d calls", tc.name, n)
+		}
+		if e, ok := err.(*provider.Error); tc.code == "RATE_LIMITED" && (!ok || e.HTTPStatus != 429 || e.RetryAfter != 12*time.Second) {
+			t.Errorf("%s: %#v", tc.name, err)
 		}
 	}
 	if _, err := New(Options{Origin: ok.URL}).Send(ctx, key, provider.SessionRef{Ref: map[string]string{"botId": "bad id"}}, msg,

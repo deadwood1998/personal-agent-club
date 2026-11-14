@@ -26,7 +26,7 @@ func TestVerifiesTheKeyAgainstTheModelList(t *testing.T) {
 	groq := providertest.Fixture(t, "groq-openai-v1.json")
 	up := providertest.Serve(t, func(providertest.Call) providertest.Answer { return providertest.Answer{Body: groq["models"]} })
 	acct, err := New(Options{Origin: up.URL + "/openai/v1"}).Verify(ctx, key)
-	if err != nil || acct != (provider.RemoteAccount{ExternalAccountID: "groq", DisplayName: "Groq"}) {
+	if err != nil || !reflect.DeepEqual(acct, provider.RemoteAccount{ExternalAccountID: "groq", DisplayName: "Groq"}) {
 		t.Fatalf("%+v %v", acct, err)
 	}
 	c := up.Calls()[0]
@@ -153,5 +153,59 @@ func TestQuotaHeaders(t *testing.T) {
 	got := Quota(h, time.UnixMilli(0))
 	if len(got) != 1 || got[0].Kind != "tokens" || got[0].Remaining != 0 || got[0].ResetsAt != 0 {
 		t.Fatalf("%+v", got)
+	}
+}
+
+// Every answer's rate limit headers are readings, the model list's too; quota never costs a request of its own. A
+// 429 is a refusal with its Retry-After, in seconds or as an HTTP date, whatever readings it also carries.
+func TestQuotaComesFromTheAnswersOnly(t *testing.T) {
+	groq := providertest.Fixture(t, "groq-openai-v1.json")
+	now := time.UnixMilli(1_800_000_000_000)
+	limits := http.Header{}
+	limits.Set("x-ratelimit-limit-requests", "14400")
+	limits.Set("x-ratelimit-remaining-requests", "14370")
+	limits.Set("x-ratelimit-reset-requests", "2m59.56s")
+	limits.Set("x-ratelimit-limit-tokens", "18000")
+	limits.Set("x-ratelimit-remaining-tokens", "17997")
+	limits.Set("x-ratelimit-reset-tokens", "7.66s")
+	var retry string
+	up := providertest.Serve(t, func(c providertest.Call) providertest.Answer {
+		switch {
+		case retry != "":
+			h := limits.Clone()
+			h.Set("Retry-After", retry)
+			h.Set("x-ratelimit-remaining-tokens", "0")
+			return providertest.Answer{Status: 429, Header: h, Body: groq["error.rate_limit"]}
+		case c.Path == "/models":
+			return providertest.Answer{Header: limits, Body: groq["models"]}
+		}
+		return providertest.Answer{Header: limits, Body: groq["chat.completion"]}
+	})
+	a := New(Options{Origin: up.URL, Now: func() time.Time { return now }})
+	acct, err := a.Verify(ctx, key)
+	want := []provider.QuotaReading{
+		{Kind: "requests", Limit: 14400, Remaining: 14370, ResetsAt: now.Add(179560 * time.Millisecond).UnixMilli(), Window: "day"},
+		{Kind: "tokens", Limit: 18000, Remaining: 17997, ResetsAt: now.Add(7660 * time.Millisecond).UnixMilli(), Window: "minute"},
+	}
+	if err != nil || !reflect.DeepEqual(acct.Quota, want) {
+		t.Fatalf("verify: %+v %v", acct.Quota, err)
+	}
+	res, err := a.Send(ctx, key, session, message, provider.SendContext{})
+	if err != nil || !reflect.DeepEqual(res.Quota, want) {
+		t.Fatalf("send: %+v %v", res.Quota, err)
+	}
+	if n := len(up.Calls()); n != 2 {
+		t.Fatalf("%d requests for a verify and a send", n)
+	}
+	for _, tc := range []struct {
+		header string
+		wait   time.Duration
+	}{{"20", 20 * time.Second}, {time.Now().Add(time.Hour).UTC().Format(http.TimeFormat), time.Hour}} {
+		retry = tc.header
+		_, err = a.Send(ctx, key, session, message, provider.SendContext{})
+		e, ok := err.(*provider.Error)
+		if !ok || e.Code != provider.CodeRateLimited || e.HTTPStatus != 429 || e.RetryAfter <= tc.wait-2*time.Second || e.RetryAfter > tc.wait {
+			t.Fatalf("Retry-After %q: %#v", tc.header, err)
+		}
 	}
 }

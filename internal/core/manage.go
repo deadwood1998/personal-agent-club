@@ -87,6 +87,7 @@ func (s *Space) ReplaceCredential(ctx context.Context, p protocol.ReplaceCredent
 	if err != nil {
 		return protocol.Account{}, verifyError(err)
 	}
+	s.noteQuota(a.AccountID, remote.Quota)
 	if a.ExternalAccountID != "" && remote.ExternalAccountID != a.ExternalAccountID {
 		return protocol.Account{}, protocol.Conflict("the credential belongs to another account").Because(protocol.ReasonAccountMismatch)
 	}

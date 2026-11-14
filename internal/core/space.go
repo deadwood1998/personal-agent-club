@@ -447,6 +447,7 @@ func (s *Space) refresh(ctx context.Context, accountID string, adapter provider.
 			return stored, nil
 		}
 		fresh, err := r.RefreshCredential(ctx, used)
+		s.observe(accountID, err)
 		if err != nil || fresh == "" {
 			return "", err
 		}
@@ -548,6 +549,7 @@ func (s *Space) watchReply(sess store.Session) {
 			return !changed
 		})
 		if err != nil && ctx.Err() == nil {
+			s.observe(sess.AccountID, err)
 			s.log().Warn("watch failed", "space", s.name, "provider", sess.Provider, "code", provider.CodeOf(err))
 		}
 	})
@@ -577,6 +579,7 @@ func (s *Space) confirm(ctx context.Context, clientID string, sess store.Session
 		return
 	}
 	answer, err := c.ConfirmSend(ctx, cred, provider.SessionRef{ExternalID: sess.ExternalID, Ref: sess.Ref}, clientID)
+	s.observe(sess.AccountID, err)
 	if err != nil {
 		s.log().Warn("send confirmation failed", "space", s.name, "provider", sess.Provider, "code", provider.CodeOf(err))
 		return
@@ -770,6 +773,7 @@ func (s *Space) AddAccount(ctx context.Context, p protocol.AddAccountParams) (pr
 		_ = s.vault.Delete(ctx, id)
 		return protocol.Account{}, err
 	}
+	s.noteQuota(id, remote.Quota)
 	s.sync(ctx, id, "")
 	s.notify(nil)
 	return s.Account(ctx, id)

@@ -287,8 +287,12 @@ func (a *Adapter) Send(ctx context.Context, credential string, s provider.Sessio
 		"sendSource": 1,
 	})
 	if !r.OK {
-		if r.Status == http.StatusUnauthorized || r.Status == http.StatusForbidden {
+		switch r.Status {
+		case http.StatusUnauthorized, http.StatusForbidden:
 			return provider.SendResult{}, &provider.Error{Code: provider.CodeAuthFailed, HTTPStatus: r.Status}
+		case http.StatusTooManyRequests:
+			// A rate limiter's refusal: the message was not taken (and its message id makes a later try safe).
+			return provider.SendResult{}, web.ReadError(r)
 		}
 		return provider.SendResult{Status: provider.Unconfirmed, Error: "SEND_UNCONFIRMED"}, nil
 	}

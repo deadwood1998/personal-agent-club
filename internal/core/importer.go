@@ -441,6 +441,7 @@ func (s *Space) verifyImported(ctx context.Context, a store.Account) (bool, stri
 	if err != nil {
 		return false, provider.CodeOf(err)
 	}
+	s.noteQuota(a.AccountID, remote.Quota)
 	if a.ExternalAccountID != "" && remote.ExternalAccountID != a.ExternalAccountID {
 		return false, protocol.ReasonAccountMismatch
 	}
