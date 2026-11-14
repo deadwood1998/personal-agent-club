@@ -52,7 +52,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprint(stderr, usage)
 			return 2
 		}
-		club := core.New(core.Options{Version: version, Registry: provider.NewRegistry(), Log: logger(stderr)})
+		club, _, err := extension.NewClub(version, logger(stderr))
+		if err != nil {
+			fmt.Fprintln(stderr, "personal-agent-club:", err)
+			return 1
+		}
 		ext.Main(extension.Program(club, version))
 		return 0
 	}
