@@ -53,6 +53,9 @@ const DefaultWatchLimit = 90 * time.Second
 // MinPollInterval is the shortest poll interval a shell should configure.
 const MinPollInterval = 15 * time.Second
 
+// DefaultPollInterval is the poll interval of both shells unless told otherwise.
+const DefaultPollInterval = 60 * time.Second
+
 // Club is one club: its spaces and their events.
 type Club struct {
 	opts   Options

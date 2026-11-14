@@ -79,7 +79,7 @@ func NewClub(version string, log *slog.Logger) (*core.Club, Host, error) {
 	if h.DataDir != "" {
 		h.KeyFile = filepath.Join(h.DataDir, KeyFileName)
 	}
-	opts := core.Options{Version: version, Log: log}
+	opts := core.Options{Version: version, Log: log, PollInterval: core.DefaultPollInterval}
 	if err := Configure(h, &opts, log); err != nil {
 		return nil, h, fmt.Errorf("storage: %w", err)
 	}

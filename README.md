@@ -135,7 +135,7 @@ Grok Bot and Groq), the Accounts page (`ui` `accounts`) and the connector `club`
 tools, `activation_events: on_startup`, and network access to the three providers' API hosts only. `make package`
 builds `dist/personal-agent-club-<version>.tar.gz` (manifest and the four programs), `scripts/persona-test.sh` holds it
 to the hub's own checks, and [docs/persona-install.md](docs/persona-install.md) installs it on a hub. The configuration
-switch `demo_echo` adds the echo provider. The extension keeps its one space (`default`) in the data directory the hub
+switch `demo_echo` adds the echo provider. The extension syncs every account every 60 s and keeps its one space (`default`) in the data directory the hub
 gives it, laid out as serve's with the key in `club.key`, so `import` and `accounts` work on it too; its providers go
 out through the HTTP client that takes the hub's egress proxy. Without a data directory (run by hand) it keeps
 everything in memory.

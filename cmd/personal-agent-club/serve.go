@@ -7,15 +7,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 
 	"github.com/nwverse/personal-agent-club/internal/core"
 	"github.com/nwverse/personal-agent-club/internal/datadir"
 	"github.com/nwverse/personal-agent-club/internal/serve"
 )
-
-// defaultPoll is how often serve syncs every account when -poll is not given.
-const defaultPoll = 60 * time.Second
 
 func runServe(args []string, d deps) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -26,7 +22,7 @@ func runServe(args []string, d deps) int {
 	listen := fs.String("listen", "", "TCP address to listen on as well, e.g. 127.0.0.1:7655 (needs -tokens)")
 	tokensFile := fs.String("tokens", "", `tokens file: {"read": [...], "write": [...], "admin": [...]}; required with -listen`)
 	demoEcho := fs.Bool("demo-echo", false, "register the in-memory echo provider (for demos and tests only)")
-	poll := fs.Duration("poll", defaultPoll, fmt.Sprintf("how often every account is synced; 0 turns polling off (at least %v)", core.MinPollInterval))
+	poll := fs.Duration("poll", core.DefaultPollInterval, fmt.Sprintf("how often every account is synced; 0 turns polling off (at least %v)", core.MinPollInterval))
 	if code, ok := parse(fs, args); !ok {
 		return code
 	}
