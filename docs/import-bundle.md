@@ -117,6 +117,23 @@ the space; the next sync of a serve sets the account's status as usual.
 A dry run (`-dry-run`, `dry_run`) reads and checks the bundle against the space's existing accounts and answers what
 would be imported (counts from the bundle, nothing verified). It writes nothing.
 
+## Writing one from the gateway
+
+`scripts/export-gateway-bundle.sh` reads one gateway account's four `agent_*` tables through `psql` and its
+credentials file, and writes the bundle 0600. The gateway's first account lives in the `public` schema and keeps its
+credentials at `<data dir>/agent-bridge/credentials.json`; an added account `<id>` lives in `ol_account_<id>` and
+`<data dir>/accounts/<id>/agent-bridge/credentials.json`. Stop the gateway's agent bridge first when club is to take
+its place, so nothing is sent or synced there after the export.
+
+```sh
+docker cp <gateway container>:/var/lib/open-lark/agent-bridge/credentials.json ./credentials.json && chmod 600 credentials.json
+PSQL="docker exec -i <postgres container> psql -U <user> -d <database>" CREDENTIALS=./credentials.json \
+  scripts/export-gateway-bundle.sh bundle.json
+rm credentials.json
+```
+
+It does not export the browser identity; set that with `club.settings.set` if the space needs one.
+
 ## Running it
 
 ```sh
